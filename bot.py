@@ -19,6 +19,7 @@ GUILD_ID = os.getenv("GUILD_ID")
 PRIDE_API_KEY = os.getenv("PRIDE_API_KEY", "")
 
 intents = discord.Intents.default()
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 TITLE_REQUIREMENTS = {
