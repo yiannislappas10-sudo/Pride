@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
@@ -67,7 +68,8 @@ def points_for(source_bot: str, event_name: str, requested: int | None) -> int:
         return max(-10000, min(10000, int(requested)))
     source = SOURCE_DEFAULTS.get(source_bot.lower(), {})
     if event_name.startswith("command:"):
-        return int(source.get("command", 0))
+        command = event_name.split(":", 1)[1]
+        return int(source.get(command, source.get("command", 0)))
     return int(source.get(event_name, 0))
 
 
@@ -81,10 +83,14 @@ async def event_endpoint(request: web.Request) -> web.Response:
         user_id = int(data["user_id"])
         source_bot = str(data["source_bot"]).lower().strip()
         event_name = str(data["event"]).strip()
-        event_id = str(
-            data.get("event_id")
-            or f"{source_bot}:{guild_id}:{user_id}:{event_name}:{data.get('reference_id', '')}"
-        )
+        if event_name.startswith("command:"):
+            minute_bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+            event_id = f"command:{source_bot}:{guild_id}:{user_id}:{minute_bucket}"
+        else:
+            event_id = str(
+                data.get("event_id")
+                or f"{source_bot}:{guild_id}:{user_id}:{event_name}:{data.get('reference_id', '')}"
+            )
     except (KeyError, TypeError, ValueError):
         return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
 
