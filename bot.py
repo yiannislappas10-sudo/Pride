@@ -105,6 +105,12 @@ async def event_endpoint(request: web.Request) -> web.Response:
         data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
     )
 
+    print(
+        f"[PRIDE] Event received: source={source_bot} event={event_name} "
+        f"guild={guild_id} user={user_id} points={points} created={created} "
+        f"reputation={user['reputation']}"
+    )
+
     return web.json_response({
         "ok": True,
         "created": created,
