@@ -278,11 +278,30 @@ async def setup_hook():
     await database.init_db()
 
     if GUILD_ID:
-        guild = discord.Object(id=int(GUILD_ID))
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
+        try:
+            guild_id = int(GUILD_ID)
+        except (TypeError, ValueError):
+            print("Pride: GUILD_ID is not a valid Discord server ID. Skipping guild command sync.")
+        else:
+            guild = discord.Object(id=guild_id)
+            bot.tree.copy_global_to(guild=guild)
+            try:
+                await bot.fetch_guild(guild_id)
+                synced = await bot.tree.sync(guild=guild)
+                print(f"Pride: synced {len(synced)} guild command(s) to GUILD_ID={guild_id}.")
+            except discord.Forbidden:
+                print(
+                    f"Pride: cannot access GUILD_ID={guild_id} (Discord 403 Missing Access). "
+                    "Check that this bot is installed in that server and that GUILD_ID matches the server."
+                )
+            except discord.NotFound:
+                print(
+                    f"Pride: GUILD_ID={guild_id} was not found. "
+                    "Check the server ID configured in Railway."
+                )
     else:
-        await bot.tree.sync()
+        synced = await bot.tree.sync()
+        print(f"Pride: synced {len(synced)} global command(s).")
 
     app = web.Application()
     app.router.add_get("/health", health_endpoint)
@@ -299,7 +318,20 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
+    guild_ids = [guild.id for guild in bot.guilds]
     print(f"Logged in as {bot.user} - Pride is online.")
+    print(f"Pride can currently see {len(guild_ids)} server(s).")
+    if GUILD_ID:
+        try:
+            configured_guild_id = int(GUILD_ID)
+            if configured_guild_id in guild_ids:
+                print(f"Pride: configured GUILD_ID={configured_guild_id} is accessible.")
+            else:
+                print(
+                    f"Pride: configured GUILD_ID={configured_guild_id} is NOT in the bot's visible server list."
+                )
+        except (TypeError, ValueError):
+            pass
 
 
 @bot.tree.error
