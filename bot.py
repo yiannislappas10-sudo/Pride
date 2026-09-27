@@ -168,8 +168,12 @@ class CombinedProfileView(discord.ui.LayoutView):
     def _box(self, *children: discord.ui.Item):
         return discord.ui.Container(*children, accent_color=0x000000)
 
-    def interaction_check(self, interaction: discord.Interaction) -> bool:
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "This profile panel belongs to its opener.",
+                ephemeral=True,
+            )
             return False
         return True
 
