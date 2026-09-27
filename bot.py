@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 import discord
 from discord import app_commands
@@ -17,6 +18,8 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
 PRIDE_API_KEY = os.getenv("PRIDE_API_KEY", "")
+ENVY_API_URL = os.getenv("ENVY_API_URL", "").rstrip("/")
+ENVY_API_KEY = os.getenv("ENVY_API_KEY", "")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -151,6 +154,141 @@ async def get_target_profile(interaction: discord.Interaction, member: discord.M
     return target, await database.get_user(interaction.guild_id, target.id)
 
 
+class CombinedProfileView(discord.ui.LayoutView):
+    def __init__(self, owner_id: int, guild_id: int, target: discord.Member, envy: dict, pride: dict):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+        self.target = target
+        self.envy = envy
+        self.pride = pride
+        self.section = "overview"
+        self.build()
+
+    def _box(self, *children: discord.ui.Item):
+        return discord.ui.Container(*children, accent_color=0x000000)
+
+    def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            return False
+        return True
+
+    def build(self):
+        self.clear_items()
+        envy = self.envy
+        pride = self.pride
+        achievements = envy.get("achievements") or []
+        pride_achievements = pride.get("achievements") or []
+        businesses = envy.get("businesses") or []
+        holdings = envy.get("market_holdings") or []
+        court = envy.get("court_record") or {}
+        shop = envy.get("shop")
+        body = (
+            f"# {self.target.display_name.upper()} — PROFILE\n\n"
+            f"**Wallet**\n{int(envy.get('wallet', 0)):,}\n\n"
+            f"**Bank**\n{int(envy.get('bank', 0)):,}\n\n"
+            f"**Net Worth**\n{int(envy.get('net_worth', 0)):,}\n\n"
+            f"**Level**\n{int(envy.get('level', 0))}\n\n"
+            f"**Achievements**\n{len(achievements) + len(pride_achievements)} unlocked\n\n"
+            f"**Businesses**\n{len(businesses)} active\n\n"
+            f"**Shop**\n{shop.get('name') if shop else 'No player shop'}\n\n"
+            f"**Market Holdings**\n{len(holdings)} position(s)\n\n"
+            f"**Court Record**\n{int(court.get('total', 0) or 0)} case(s)\n\n"
+            f"**Pride**\n{pride.get('rank', 'Rising Name')} · {int(pride.get('reputation', 0))} reputation"
+        )
+        if self.section == "achievements":
+            body = (
+                "# ACHIEVEMENTS\n\n"
+                + ("\n".join(achievements) if achievements else "No Envy achievements.")
+                + "\n\n**Pride achievements**\n"
+                + (", ".join(pride_achievements) if pride_achievements else "None")
+            )
+        elif self.section == "businesses":
+            body = "# BUSINESSES\n\n" + (
+                "\n".join(
+                    f"**#{b['business_id']}** {b['business_type'].title()} · Level {b['level']} · {int(b['investment']):,}"
+                    for b in businesses
+                ) if businesses else "No businesses."
+            )
+        elif self.section == "shop":
+            body = "# SHOP\n\n" + (
+                f"**{shop['name']}**\n{shop.get('description') or 'Player storefront.'}"
+                if shop else "No player shop."
+            )
+        elif self.section == "holdings":
+            body = "# MARKET HOLDINGS\n\n" + (
+                "\n".join(
+                    f"**{h['symbol']}** · {int(h['quantity']):,} units · {int(h['value']):,}"
+                    for h in holdings
+                ) if holdings else "No market holdings."
+            )
+        elif self.section == "court":
+            body = (
+                "# COURT RECORD\n\n"
+                f"**Total:** {int(court.get('total', 0) or 0)}\n"
+                f"**As lawyer:** {int(court.get('plaintiff_cases', 0) or 0)}\n"
+                f"**As defendant:** {int(court.get('defendant_cases', 0) or 0)}"
+            )
+
+        def nav(label, action):
+            button = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"pride:profile:{action}",
+            )
+            async def callback(interaction: discord.Interaction):
+                if action == "close":
+                    self.stop()
+                    await interaction.response.edit_message(content=None, view=None)
+                    return
+                self.section = action
+                if action == "refresh":
+                    fresh = await fetch_envy_profile(self.guild_id, self.target.id)
+                    self.envy = fresh or self.envy
+                    self.section = "overview"
+                self.build()
+                await interaction.response.edit_message(content=None, embeds=[], view=self)
+            button.callback = callback
+            return button
+
+        self.add_item(
+            self._box(
+                discord.ui.TextDisplay(body),
+                discord.ui.Separator(visible=True),
+                discord.ui.ActionRow(
+                    nav("Overview", "overview"),
+                    nav("Achievements", "achievements"),
+                    nav("Businesses", "businesses"),
+                    nav("Shop", "shop"),
+                ),
+                discord.ui.ActionRow(
+                    nav("Market Holdings", "holdings"),
+                    nav("Court Record", "court"),
+                    nav("Refresh", "refresh"),
+                    nav("Close", "close"),
+                ),
+            )
+        )
+
+
+async def fetch_envy_profile(guild_id: int, user_id: int) -> dict:
+    if not ENVY_API_URL or not ENVY_API_KEY:
+        return {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{ENVY_API_URL}/v1/profile/{guild_id}/{user_id}",
+                headers={"Authorization": f"Bearer {ENVY_API_KEY}"},
+            ) as response:
+                if response.status != 200:
+                    return {}
+                payload = await response.json()
+                return payload.get("profile", {}) if payload.get("ok") else {}
+    except (aiohttp.ClientError, TimeoutError):
+        return {}
+
+
 @bot.tree.command(name="pride", description="View a Pride profile.")
 @app_commands.describe(member="The member to inspect.")
 async def pride(interaction: discord.Interaction, member: discord.Member | None = None):
@@ -168,6 +306,22 @@ async def pride(interaction: discord.Interaction, member: discord.Member | None 
     await interaction.response.send_message(
         embed=embed(f"{target.display_name}'s Pride", description)
     )
+
+
+@bot.tree.command(name="profile", description="View a combined Envy + Pride profile.")
+@app_commands.describe(member="The member to inspect.")
+async def profile(interaction: discord.Interaction, member: discord.Member | None = None):
+    target = member or interaction.user
+    pride_profile = await database.get_user(interaction.guild_id, target.id)
+    envy_profile = await fetch_envy_profile(interaction.guild_id, target.id)
+    if not envy_profile:
+        await interaction.response.send_message(
+            "Envy profile data is currently unavailable. Check ENVY_API_URL and ENVY_API_KEY.",
+            ephemeral=True,
+        )
+        return
+    view = CombinedProfileView(interaction.user.id, interaction.guild_id, target, envy_profile, pride_profile)
+    await interaction.response.send_message(view=view)
 
 
 @bot.tree.command(name="reputation", description="View a member's reputation.")
@@ -282,6 +436,10 @@ async def pride_revoke(
 @bot.event
 async def setup_hook():
     await database.init_db()
+    if ENVY_API_URL and ENVY_API_KEY:
+        print(f"[ENVY] Combined profile integration configured: {ENVY_API_URL}/v1/profile")
+    else:
+        print("[ENVY] Combined profile integration not configured.")
 
     if GUILD_ID:
         try:
