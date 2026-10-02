@@ -56,7 +56,7 @@ class CoreModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         save_character(self.user_id, {**(self.existing or {}), "name": clean(self.name.value, 80), "age": clean(self.age.value, 20), "pronouns": clean(self.pronouns.value, 40), "occupation": clean(self.occupation.value, 80), "faction": clean(self.faction.value, 80)})
         character = get_character(self.user_id)
-        await interaction.response.edit_message(embed=character_embed(character, interaction.user), view=CharacterDashboard(self.user_id))
+        await interaction.response.edit_message(content=None, embed=None, embeds=None, attachments=None, view=CharacterDashboard(self.user_id))
 
 class DetailsModal(discord.ui.Modal, title="OC Details"):
     def __init__(self, user_id: int, existing: dict):
@@ -88,86 +88,135 @@ class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
         character = update_character(self.user_id, avatar_url=url)
         await interaction.response.edit_message(embed=character_embed(character, interaction.user), view=CharacterDashboard(self.user_id))
 
-class CharacterDashboard(discord.ui.View):
+class CharacterActions(discord.ui.ActionRow):
     def __init__(self, user_id: int):
-        super().__init__(timeout=1200)
+        super().__init__()
         self.user_id = user_id
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    async def _allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This character panel belongs to someone else.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="Create / Edit", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Create / Edit", style=discord.ButtonStyle.primary)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CoreModal(self.user_id, get_character(self.user_id)))
+        if await self._allowed(interaction):
+            await interaction.response.send_modal(CoreModal(self.user_id, get_character(self.user_id)))
 
-    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary)
     async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._allowed(interaction):
+            return
         character = get_character(self.user_id)
         if not character:
             await interaction.response.send_message("Create your OC first.", ephemeral=True)
             return
         await interaction.response.send_modal(DetailsModal(self.user_id, character))
 
-    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.secondary)
     async def avatar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._allowed(interaction):
+            return
         if not get_character(self.user_id):
             await interaction.response.send_message("Create your OC first.", ephemeral=True)
             return
         await interaction.response.send_modal(AvatarModal(self.user_id))
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        character = get_character(self.user_id)
-        if character:
-            await interaction.response.edit_message(embed=character_embed(character, interaction.user), view=self)
-        else:
-            await interaction.response.edit_message(embed=discord.Embed(title="⟐ OC Dashboard", description="You don't have an OC yet. Press **Create / Edit** to begin."), view=self)
+        if not await self._allowed(interaction):
+            return
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            embeds=None,
+            attachments=None,
+            view=CharacterDashboard(self.user_id),
+        )
 
-    @discord.ui.button(label="Delete OC", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Delete OC", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._allowed(interaction):
+            return
         delete_character(self.user_id)
-        await interaction.response.edit_message(embed=discord.Embed(title="⟐ OC Dashboard", description="Your OC has been deleted."), view=self)
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            embeds=None,
+            attachments=None,
+            view=CharacterDashboard(self.user_id),
+        )
 
-class RPBot(commands.Bot):
-    async def setup_hook(self):
-        init_db()
-        guild = discord.Object(id=DEV_GUILD_ID)
-        self.tree.copy_global_to(guild=guild)
-        synced = await self.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} commands to guild {DEV_GUILD_ID}")
 
-bot = RPBot(command_prefix="!", intents=intents)
+class CharacterDashboard(discord.ui.LayoutView):
+    def __init__(self, user_id: int, owner=None):
+        super().__init__(timeout=1200)
+        self.user_id = user_id
+        self.owner = owner
 
-@bot.event
-async def on_ready():
-    print(f"RP Bot online as {bot.user} ({bot.user.id})")
+        character = get_character(user_id)
+        avatar = (
+            character.get("avatar_url")
+            if character
+            else None
+        ) or (owner.display_avatar.url if owner else None)
 
-oc_group = app_commands.Group(name="oc", description="Create and manage your roleplay character.")
+        if character:
+            identity = (
+                f"## ⟐ {character['name']}\\n"
+                f"*Original Character*\\n"
+                f"**Age:** {display(character['age'])}  •  "
+                f"**Pronouns:** {display(character['pronouns'])}\\n"
+                f"**Occupation:** {display(character['occupation'])}  •  "
+                f"**Faction:** {display(character['faction'])}"
+            )
+            details = (
+                f"### Character Profile\\n"
+                f"**Appearance**\\n{trim(character['appearance'])}\\n\\n"
+                f"**Personality**\\n{trim(character['personality'])}\\n\\n"
+                f"**Backstory**\\n{trim(character['backstory'], 1800)}"
+            )
+            if avatar:
+                self.container = discord.ui.Container(
+                    discord.ui.Section(
+                        identity,
+                        accessory=discord.ui.Thumbnail(avatar, description=f"{character['name']} avatar"),
+                    ),
+                    discord.ui.Separator(),
+                    discord.ui.TextDisplay(details),
+                    discord.ui.Separator(),
+                    CharacterActions(user_id),
+                )
+            else:
+                self.container = discord.ui.Container(
+                    discord.ui.TextDisplay(identity),
+                    discord.ui.Separator(),
+                    discord.ui.TextDisplay(details),
+                    discord.ui.Separator(),
+                    CharacterActions(user_id),
+                )
+        else:
+            self.container = discord.ui.Container(
+                discord.ui.TextDisplay(
+                    "## ⟐ OC Dashboard\\n"
+                    "*Roleplay Character Management*\\n\\n"
+                    "You don't have an OC yet.\\n"
+                    "Create your character to establish the identity you'll use in RP."
+                ),
+                discord.ui.Separator(),
+                discord.ui.TextDisplay(
+                    "**Available**\\n"
+                    "Create your OC first, then add appearance, personality, "
+                    "backstory, avatar, occupation and faction."
+                ),
+                discord.ui.Separator(),
+                CharacterActions(user_id),
+            )
 
-@oc_group.command(name="dashboard", description="Open your OC dashboard.")
-async def oc_dashboard(interaction: discord.Interaction):
-    character = get_character(interaction.user.id)
-    if character:
-        embed = character_embed(character, interaction.user)
-    else:
-        embed = discord.Embed(title="⟐ OC Dashboard", description="You don't have an OC yet.\n\nCreate your character to begin building your roleplay identity.")
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    await interaction.response.send_message(embed=embed, view=CharacterDashboard(interaction.user.id), ephemeral=True)
+        self.add_item(self.container)
 
-@oc_group.command(name="view", description="View an OC.")
-@app_commands.describe(member="The member whose OC you want to view.")
-async def oc_view(interaction: discord.Interaction, member: discord.Member | None = None):
-    target = member or interaction.user
-    character = get_character(target.id)
-    if not character:
-        await interaction.response.send_message(f"{target.display_name} hasn't created an OC yet.", ephemeral=True)
-        return
-    await interaction.response.send_message(embed=character_embed(character, target))
 
-bot.tree.add_command(oc_group)
+def dashboard_view(user_id: int, owner=None) -> CharacterDashboard:
+    return CharacterDashboard(user_id, owner)
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
