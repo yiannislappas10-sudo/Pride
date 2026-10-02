@@ -358,7 +358,7 @@ class RPBot(commands.Bot):
         await self.tree.sync()
 
         self.tree.clear_commands(guild=guild)
-        self.tree.add_command(oc_group, override=True)
+        self.tree.add_command(oc_group, guild=guild, override=True)
         synced = await self.tree.sync(guild=guild)
 
         print(
