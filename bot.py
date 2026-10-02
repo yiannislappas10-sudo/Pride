@@ -450,13 +450,7 @@ class CharacterDashboard(discord.ui.LayoutView):
         if not await self.allowed(interaction):
             return
 
-        characters = get_characters(self.user_id)
-        character = characters[0] if characters else None
-
-        for item in characters:
-            if item["character_id"] == self.current_character_id():
-                character = item
-                break
+        character = self.current_character()
 
         if not character:
             await interaction.response.send_message(
@@ -560,10 +554,6 @@ class CharacterDashboard(discord.ui.LayoutView):
         await interaction.response.edit_message(
             view=CharacterDashboard(self.user_id, character_id)
         )
-
-    def current_character_id(self) -> int | None:
-        characters = get_characters(self.user_id)
-        return characters[0]["character_id"] if characters else None
 
     def current_character(self) -> dict | None:
         characters = get_characters(self.user_id)
