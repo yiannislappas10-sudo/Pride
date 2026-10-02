@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from database import (
     init_db,
+    get_characters,
     get_character,
     save_character,
     update_character,
@@ -36,10 +37,18 @@ def trim(value: str, limit: int = 1024) -> str:
 
 
 class CoreModal(discord.ui.Modal):
-    def __init__(self, user_id: int, existing=None):
+    def __init__(
+        self,
+        user_id: int,
+        character_id: int | None = None,
+        existing: dict | None = None,
+    ):
         self.user_id = user_id
+        self.character_id = character_id
         self.existing = existing or {}
-        super().__init__(title="Create Your OC" if not existing else "Edit OC")
+
+        title = "Create Your OC" if character_id is None else "Edit OC"
+        super().__init__(title=title)
 
         def val(key: str) -> str:
             return self.existing.get(key, "")
@@ -86,26 +95,31 @@ class CoreModal(discord.ui.Modal):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
-        save_character(
+        data = {
+            **self.existing,
+            "name": clean(self.name.value, 80),
+            "age": clean(self.age.value, 20),
+            "pronouns": clean(self.pronouns.value, 40),
+            "occupation": clean(self.occupation.value, 80),
+            "faction": clean(self.faction.value, 80),
+        }
+
+        new_id = save_character(
             self.user_id,
-            {
-                **self.existing,
-                "name": clean(self.name.value, 80),
-                "age": clean(self.age.value, 20),
-                "pronouns": clean(self.pronouns.value, 40),
-                "occupation": clean(self.occupation.value, 80),
-                "faction": clean(self.faction.value, 80),
-            },
+            data,
+            character_id=self.character_id,
         )
+
         await interaction.response.edit_message(
-            view=CharacterDashboard(self.user_id)
+            view=CharacterDashboard(self.user_id, new_id)
         )
 
 
 class DetailsModal(discord.ui.Modal, title="OC Details"):
-    def __init__(self, user_id: int, existing: dict):
+    def __init__(self, user_id: int, character_id: int, existing: dict):
         super().__init__(timeout=600)
         self.user_id = user_id
+        self.character_id = character_id
 
         self.appearance = discord.ui.TextInput(
             label="Appearance",
@@ -129,18 +143,23 @@ class DetailsModal(discord.ui.Modal, title="OC Details"):
             required=False,
         )
 
-        for item in (self.appearance, self.personality, self.backstory):
+        for item in (
+            self.appearance,
+            self.personality,
+            self.backstory,
+        ):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
         update_character(
-            self.user_id,
+            self.character_id,
             appearance=clean(self.appearance.value, 1000),
             personality=clean(self.personality.value, 1000),
             backstory=clean(self.backstory.value, 2000),
         )
+
         await interaction.response.edit_message(
-            view=CharacterDashboard(self.user_id)
+            view=CharacterDashboard(self.user_id, self.character_id)
         )
 
 
@@ -152,9 +171,10 @@ class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
         required=True,
     )
 
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, character_id: int):
         super().__init__(timeout=300)
         self.user_id = user_id
+        self.character_id = character_id
 
     async def on_submit(self, interaction: discord.Interaction):
         url = self.avatar.value.strip()
@@ -166,23 +186,143 @@ class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
             )
             return
 
-        update_character(self.user_id, avatar_url=url)
+        update_character(self.character_id, avatar_url=url)
+
+        await interaction.response.edit_message(
+            view=CharacterDashboard(self.user_id, self.character_id)
+        )
+
+
+class DeleteConfirmView(discord.ui.LayoutView):
+    def __init__(self, user_id: int, character_id: int, stage: int = 1):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.character_id = character_id
+        self.stage = stage
+
+        character = get_character(character_id)
+        name = character["name"] if character else "this OC"
+
+        if stage == 1:
+            text = (
+                "## Delete OC?\n"
+                f'You are about to delete **"{name}"**.\n\n'
+                "This is confirmation **1 of 2**. "
+                "Nothing has been deleted yet."
+            )
+        else:
+            text = (
+                "## Final Confirmation\n"
+                f'Are you absolutely sure you want to delete **"{name}"**?\n\n'
+                "This is confirmation **2 of 2**. "
+                "The next confirmation permanently removes this OC."
+            )
+
+        self.add_item(discord.ui.TextDisplay(text))
+        self.add_item(discord.ui.Separator())
+
+        actions = discord.ui.ActionRow()
+
+        cancel = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+        confirm = discord.ui.Button(
+            label=(
+                "Confirm Delete"
+                if stage == 1
+                else "Permanently Delete"
+            ),
+            style=discord.ButtonStyle.danger,
+        )
+
+        cancel.callback = self.cancel_callback
+        confirm.callback = self.confirm_callback
+
+        actions.add_item(cancel)
+        actions.add_item(confirm)
+        self.add_item(actions)
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This confirmation panel belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def cancel_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        await interaction.response.edit_message(
+            view=CharacterDashboard(self.user_id, self.character_id)
+        )
+
+    async def confirm_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        character = get_character(self.character_id)
+        if not character:
+            await interaction.response.edit_message(
+                view=CharacterDashboard(self.user_id)
+            )
+            return
+
+        if self.stage == 1:
+            await interaction.response.edit_message(
+                view=DeleteConfirmView(
+                    self.user_id,
+                    self.character_id,
+                    stage=2,
+                )
+            )
+            return
+
+        delete_character(self.character_id)
+
         await interaction.response.edit_message(
             view=CharacterDashboard(self.user_id)
         )
 
 
 class CharacterDashboard(discord.ui.LayoutView):
-    def __init__(self, user_id: int):
+    def __init__(
+        self,
+        user_id: int,
+        selected_character_id: int | None = None,
+    ):
         super().__init__(timeout=1200)
         self.user_id = user_id
 
-        character = get_character(user_id)
+        characters = get_characters(user_id)
+
+        character = None
+        if selected_character_id is not None:
+            candidate = get_character(selected_character_id)
+            if candidate and candidate["user_id"] == user_id:
+                character = candidate
+
+        if character is None and characters:
+            character = characters[0]
+
+        selected_id = character["character_id"] if character else None
 
         if character:
+            position = next(
+                (
+                    index + 1
+                    for index, item in enumerate(characters)
+                    if item["character_id"] == selected_id
+                ),
+                1,
+            )
+
             identity = (
                 f"## ⟐ {character['name']}\n"
-                "*Original Character*\n"
+                f"*Original Character • OC {position} of {len(characters)}*\n"
                 f"**Age:** {display(character['age'])}  •  "
                 f"**Pronouns:** {display(character['pronouns'])}\n"
                 f"**Occupation:** {display(character['occupation'])}  •  "
@@ -208,8 +348,8 @@ class CharacterDashboard(discord.ui.LayoutView):
 
             profile = (
                 "### Get Started\n"
-                "Create your OC first, then add your appearance, "
-                "personality, backstory, avatar, occupation and faction."
+                "Create your first OC. You can make multiple characters "
+                "and switch between them here."
             )
 
         self.add_item(discord.ui.TextDisplay(identity))
@@ -219,40 +359,77 @@ class CharacterDashboard(discord.ui.LayoutView):
 
         actions = discord.ui.ActionRow()
 
-        self.edit_button = discord.ui.Button(
-            label="Create / Edit",
+        self.create_button = discord.ui.Button(
+            label="Create OC",
             style=discord.ButtonStyle.primary,
+        )
+        self.edit_button = discord.ui.Button(
+            label="Edit Current",
+            style=discord.ButtonStyle.secondary,
+            disabled=character is None,
         )
         self.details_button = discord.ui.Button(
             label="Details",
             style=discord.ButtonStyle.secondary,
+            disabled=character is None,
         )
         self.avatar_button = discord.ui.Button(
             label="Avatar",
             style=discord.ButtonStyle.secondary,
-        )
-        self.refresh_button = discord.ui.Button(
-            label="Refresh",
-            style=discord.ButtonStyle.secondary,
+            disabled=character is None,
         )
         self.delete_button = discord.ui.Button(
             label="Delete OC",
             style=discord.ButtonStyle.danger,
+            disabled=character is None,
         )
 
+        self.create_button.callback = self.create_callback
         self.edit_button.callback = self.edit_callback
         self.details_button.callback = self.details_callback
         self.avatar_button.callback = self.avatar_callback
-        self.refresh_button.callback = self.refresh_callback
         self.delete_button.callback = self.delete_callback
 
+        actions.add_item(self.create_button)
         actions.add_item(self.edit_button)
         actions.add_item(self.details_button)
         actions.add_item(self.avatar_button)
-        actions.add_item(self.refresh_button)
         actions.add_item(self.delete_button)
-
         self.add_item(actions)
+
+        if characters:
+            switch_row = discord.ui.ActionRow()
+
+            options = [
+                discord.SelectOption(
+                    label=trim(item["name"], 100),
+                    description=(
+                        f"OC #{index + 1}"
+                        if len(characters) <= 25
+                        else "Character"
+                    ),
+                    value=str(item["character_id"]),
+                    default=item["character_id"] == selected_id,
+                )
+                for index, item in enumerate(characters[:25])
+            ]
+
+            self.switch_select = discord.ui.Select(
+                placeholder="Switch character",
+                options=options,
+                min_values=1,
+                max_values=1,
+            )
+            self.switch_select.callback = self.switch_callback
+            switch_row.add_item(self.switch_select)
+            self.add_item(switch_row)
+
+            if len(characters) > 25:
+                self.add_item(
+                    discord.ui.TextDisplay(
+                        "*Only the first 25 OCs are shown in the switcher.*"
+                    )
+                )
 
     async def allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -263,58 +440,152 @@ class CharacterDashboard(discord.ui.LayoutView):
             return False
         return True
 
-    async def edit_callback(self, interaction: discord.Interaction):
+    async def create_callback(self, interaction: discord.Interaction):
         if await self.allowed(interaction):
             await interaction.response.send_modal(
-                CoreModal(self.user_id, get_character(self.user_id))
+                CoreModal(self.user_id)
             )
 
-    async def details_callback(self, interaction: discord.Interaction):
+    async def edit_callback(self, interaction: discord.Interaction):
         if not await self.allowed(interaction):
             return
 
-        character = get_character(self.user_id)
+        characters = get_characters(self.user_id)
+        character = characters[0] if characters else None
+
+        for item in characters:
+            if item["character_id"] == self.current_character_id():
+                character = item
+                break
+
         if not character:
             await interaction.response.send_message(
-                "Create your OC first.",
+                "Create an OC first.",
                 ephemeral=True,
             )
             return
 
         await interaction.response.send_modal(
-            DetailsModal(self.user_id, character)
+            CoreModal(
+                self.user_id,
+                character["character_id"],
+                character,
+            )
+        )
+
+    async def details_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        character = self.current_character()
+        if not character:
+            await interaction.response.send_message(
+                "Create an OC first.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(
+            DetailsModal(
+                self.user_id,
+                character["character_id"],
+                character,
+            )
         )
 
     async def avatar_callback(self, interaction: discord.Interaction):
         if not await self.allowed(interaction):
             return
 
-        if not get_character(self.user_id):
+        character = self.current_character()
+        if not character:
             await interaction.response.send_message(
-                "Create your OC first.",
+                "Create an OC first.",
                 ephemeral=True,
             )
             return
 
         await interaction.response.send_modal(
-            AvatarModal(self.user_id)
+            AvatarModal(
+                self.user_id,
+                character["character_id"],
+            )
         )
 
     async def refresh_callback(self, interaction: discord.Interaction):
-        if await self.allowed(interaction):
-            await interaction.response.edit_message(
-                view=CharacterDashboard(self.user_id)
-            )
+        if not await self.allowed(interaction):
+            return
+
+        current = self.current_character()
+        current_id = current["character_id"] if current else None
+
+        await interaction.response.edit_message(
+            view=CharacterDashboard(self.user_id, current_id)
+        )
 
     async def delete_callback(self, interaction: discord.Interaction):
         if not await self.allowed(interaction):
             return
 
-        delete_character(self.user_id)
+        character = self.current_character()
+        if not character:
+            await interaction.response.send_message(
+                "Create an OC first.",
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.edit_message(
-            view=CharacterDashboard(self.user_id)
+            view=DeleteConfirmView(
+                self.user_id,
+                character["character_id"],
+                stage=1,
+            )
         )
+
+    async def switch_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        character_id = int(self.switch_select.values[0])
+        character = get_character(character_id)
+
+        if not character or character["user_id"] != self.user_id:
+            await interaction.response.send_message(
+                "That character no longer exists.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            view=CharacterDashboard(self.user_id, character_id)
+        )
+
+    def current_character_id(self) -> int | None:
+        characters = get_characters(self.user_id)
+        return characters[0]["character_id"] if characters else None
+
+    def current_character(self) -> dict | None:
+        characters = get_characters(self.user_id)
+        if not characters:
+            return None
+
+        # The dashboard's switcher stores the selected item in its select default.
+        if hasattr(self, "switch_select"):
+            selected = next(
+                (
+                    option.value
+                    for option in self.switch_select.options
+                    if option.default
+                ),
+                None,
+            )
+            if selected is not None:
+                character = get_character(int(selected))
+                if character and character["user_id"] == self.user_id:
+                    return character
+
+        return characters[0]
 
 
 class CharacterProfile(discord.ui.LayoutView):
@@ -346,19 +617,85 @@ class CharacterProfile(discord.ui.LayoutView):
         self.add_item(discord.ui.TextDisplay(profile))
 
 
+class PublicCharacterPicker(discord.ui.LayoutView):
+    def __init__(
+        self,
+        member: discord.Member,
+        characters: list[dict],
+    ):
+        super().__init__(timeout=300)
+        self.member = member
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                f"## ⟐ {member.display_name}'s Characters\n"
+                "Select an OC to view its profile."
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        row = discord.ui.ActionRow()
+        options = [
+            discord.SelectOption(
+                label=trim(character["name"], 100),
+                value=str(character["character_id"]),
+                description=f"OC #{index + 1}",
+            )
+            for index, character in enumerate(characters[:25])
+        ]
+
+        select = discord.ui.Select(
+            placeholder="Select an OC",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        select.callback = self.select_callback
+
+        row.add_item(select)
+        self.select = select
+        self.add_item(row)
+
+        if len(characters) > 25:
+            self.add_item(
+                discord.ui.TextDisplay(
+                    "*Only the first 25 OCs are available in this picker.*"
+                )
+            )
+
+    async def select_callback(self, interaction: discord.Interaction):
+        character_id = int(self.select.values[0])
+        character = get_character(character_id)
+
+        if not character or character["user_id"] != self.member.id:
+            await interaction.response.send_message(
+                "That character no longer exists.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            view=CharacterProfile(character, self.member)
+        )
+
+
 class RPBot(commands.Bot):
     async def setup_hook(self):
         init_db()
 
         guild = discord.Object(id=DEV_GUILD_ID)
 
-        # Remove old global commands such as the former /pride command.
-        # Keep the current command tree clean, then register only /oc on the dev guild.
+        # Remove all old global commands, including the previous /pride command.
         self.tree.clear_commands(guild=None)
         await self.tree.sync()
 
+        # Register only the current /oc command group in the development guild.
         self.tree.clear_commands(guild=guild)
-        self.tree.add_command(oc_group, guild=guild, override=True)
+        self.tree.add_command(
+            oc_group,
+            guild=guild,
+            override=True,
+        )
         synced = await self.tree.sync(guild=guild)
 
         print(
@@ -380,7 +717,7 @@ bot = RPBot(
 
 oc_group = app_commands.Group(
     name="oc",
-    description="Create and manage your roleplay character.",
+    description="Create and manage your roleplay characters.",
 )
 
 
@@ -399,23 +736,31 @@ async def oc_dashboard(interaction: discord.Interaction):
     name="view",
     description="View a member's OC.",
 )
-@app_commands.describe(member="The member whose OC you want to view.")
+@app_commands.describe(
+    member="The member whose OC you want to view."
+)
 async def oc_view(
     interaction: discord.Interaction,
     member: discord.Member | None = None,
 ):
     target = member or interaction.user
-    character = get_character(target.id)
+    characters = get_characters(target.id)
 
-    if not character:
+    if not characters:
         await interaction.response.send_message(
             f"{target.display_name} doesn't have an OC yet.",
             ephemeral=True,
         )
         return
 
+    if len(characters) == 1:
+        await interaction.response.send_message(
+            view=CharacterProfile(characters[0], target)
+        )
+        return
+
     await interaction.response.send_message(
-        view=CharacterProfile(character, target),
+        view=PublicCharacterPicker(target, characters)
     )
 
 
