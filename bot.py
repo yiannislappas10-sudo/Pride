@@ -88,79 +88,15 @@ class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
         character = update_character(self.user_id, avatar_url=url)
         await interaction.response.edit_message(embed=character_embed(character, interaction.user), view=CharacterDashboard(self.user_id))
 
-class CharacterActions(discord.ui.ActionRow):
-    def __init__(self, user_id: int):
-        super().__init__()
-        self.user_id = user_id
-
-    async def _allowed(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This character panel belongs to someone else.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Create / Edit", style=discord.ButtonStyle.primary)
-    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if await self._allowed(interaction):
-            await interaction.response.send_modal(CoreModal(self.user_id, get_character(self.user_id)))
-
-    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary)
-    async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._allowed(interaction):
-            return
-        character = get_character(self.user_id)
-        if not character:
-            await interaction.response.send_message("Create your OC first.", ephemeral=True)
-            return
-        await interaction.response.send_modal(DetailsModal(self.user_id, character))
-
-    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.secondary)
-    async def avatar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._allowed(interaction):
-            return
-        if not get_character(self.user_id):
-            await interaction.response.send_message("Create your OC first.", ephemeral=True)
-            return
-        await interaction.response.send_modal(AvatarModal(self.user_id))
-
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
-    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._allowed(interaction):
-            return
-        await interaction.response.edit_message(
-            content=None,
-            embed=None,
-            embeds=None,
-            attachments=None,
-            view=CharacterDashboard(self.user_id),
-        )
-
-    @discord.ui.button(label="Delete OC", style=discord.ButtonStyle.danger)
-    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._allowed(interaction):
-            return
-        delete_character(self.user_id)
-        await interaction.response.edit_message(
-            content=None,
-            embed=None,
-            embeds=None,
-            attachments=None,
-            view=CharacterDashboard(self.user_id),
-        )
-
-
 class CharacterDashboard(discord.ui.LayoutView):
     def __init__(self, user_id: int, owner=None):
         super().__init__(timeout=1200)
         self.user_id = user_id
-        self.owner = owner
 
         character = get_character(user_id)
-        avatar = (
-            character.get("avatar_url")
-            if character
-            else None
-        ) or (owner.display_avatar.url if owner else None)
+        avatar = (character.get("avatar_url") if character else None) or (
+            owner.display_avatar.url if owner else None
+        )
 
         if character:
             identity = (
@@ -171,50 +107,117 @@ class CharacterDashboard(discord.ui.LayoutView):
                 f"**Occupation:** {display(character['occupation'])}  •  "
                 f"**Faction:** {display(character['faction'])}"
             )
-            details = (
+            profile = (
                 f"### Character Profile\\n"
                 f"**Appearance**\\n{trim(character['appearance'])}\\n\\n"
                 f"**Personality**\\n{trim(character['personality'])}\\n\\n"
                 f"**Backstory**\\n{trim(character['backstory'], 1800)}"
             )
-            if avatar:
-                self.container = discord.ui.Container(
-                    discord.ui.Section(
-                        identity,
-                        accessory=discord.ui.Thumbnail(avatar, description=f"{character['name']} avatar"),
-                    ),
-                    discord.ui.Separator(),
-                    discord.ui.TextDisplay(details),
-                    discord.ui.Separator(),
-                    CharacterActions(user_id),
-                )
-            else:
-                self.container = discord.ui.Container(
-                    discord.ui.TextDisplay(identity),
-                    discord.ui.Separator(),
-                    discord.ui.TextDisplay(details),
-                    discord.ui.Separator(),
-                    CharacterActions(user_id),
-                )
         else:
-            self.container = discord.ui.Container(
-                discord.ui.TextDisplay(
-                    "## ⟐ OC Dashboard\\n"
-                    "*Roleplay Character Management*\\n\\n"
-                    "You don't have an OC yet.\\n"
-                    "Create your character to establish the identity you'll use in RP."
-                ),
-                discord.ui.Separator(),
-                discord.ui.TextDisplay(
-                    "**Available**\\n"
-                    "Create your OC first, then add appearance, personality, "
-                    "backstory, avatar, occupation and faction."
-                ),
-                discord.ui.Separator(),
-                CharacterActions(user_id),
+            identity = (
+                "## ⟐ OC Dashboard\\n"
+                "*Roleplay Character Management*\\n\\n"
+                "You don't have an OC yet."
+            )
+            profile = (
+                "**Get started**\\n"
+                "Create your OC first, then add your appearance, personality, "
+                "backstory, avatar, occupation and faction."
             )
 
-        self.add_item(self.container)
+        self.add_item(discord.ui.TextDisplay(identity))
+        self.add_item(discord.ui.Separator())
+        self.add_item(discord.ui.TextDisplay(profile))
+        self.add_item(discord.ui.Separator())
+
+        actions = discord.ui.ActionRow()
+        self.edit_button = discord.ui.Button(
+            label="Create / Edit", style=discord.ButtonStyle.primary
+        )
+        self.details_button = discord.ui.Button(
+            label="Details", style=discord.ButtonStyle.secondary
+        )
+        self.avatar_button = discord.ui.Button(
+            label="Avatar", style=discord.ButtonStyle.secondary
+        )
+        self.refresh_button = discord.ui.Button(
+            label="Refresh", style=discord.ButtonStyle.secondary
+        )
+        self.delete_button = discord.ui.Button(
+            label="Delete OC", style=discord.ButtonStyle.danger
+        )
+
+        self.edit_button.callback = self.edit_callback
+        self.details_button.callback = self.details_callback
+        self.avatar_button.callback = self.avatar_callback
+        self.refresh_button.callback = self.refresh_callback
+        self.delete_button.callback = self.delete_callback
+
+        actions.add_item(self.edit_button)
+        actions.add_item(self.details_button)
+        actions.add_item(self.avatar_button)
+        actions.add_item(self.refresh_button)
+        actions.add_item(self.delete_button)
+        self.add_item(actions)
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This character panel belongs to someone else.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def edit_callback(self, interaction: discord.Interaction):
+        if await self.allowed(interaction):
+            await interaction.response.send_modal(
+                CoreModal(self.user_id, get_character(self.user_id))
+            )
+
+    async def details_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+        character = get_character(self.user_id)
+        if not character:
+            await interaction.response.send_message(
+                "Create your OC first.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            DetailsModal(self.user_id, character)
+        )
+
+    async def avatar_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+        if not get_character(self.user_id):
+            await interaction.response.send_message(
+                "Create your OC first.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(AvatarModal(self.user_id))
+
+    async def refresh_callback(self, interaction: discord.Interaction):
+        if await self.allowed(interaction):
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                embeds=None,
+                attachments=None,
+                view=CharacterDashboard(self.user_id, interaction.user),
+            )
+
+    async def delete_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+        delete_character(self.user_id)
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            embeds=None,
+            attachments=None,
+            view=CharacterDashboard(self.user_id, interaction.user),
+        )
 
 
 def dashboard_view(user_id: int, owner=None) -> CharacterDashboard:
