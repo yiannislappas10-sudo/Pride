@@ -173,7 +173,7 @@ class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
 
 class CharacterDashboard(discord.ui.View):
     def __init__(self, user_id: int):
-        super().__init__(timeout=900)
+        super().__init__(timeout=1200)
         self.user_id = user_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -185,13 +185,13 @@ class CharacterDashboard(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Create / Edit", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Create / Edit", emoji="✦", style=discord.ButtonStyle.primary, row=0)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(
             CoreModal(self.user_id, get_character(self.user_id))
         )
 
-    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Details", emoji="◇", style=discord.ButtonStyle.secondary, row=0)
     async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
         character = get_character(self.user_id)
         if not character:
@@ -204,7 +204,7 @@ class CharacterDashboard(discord.ui.View):
             DetailsModal(self.user_id, character)
         )
 
-    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Avatar", emoji="◈", style=discord.ButtonStyle.secondary, row=0)
     async def avatar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not get_character(self.user_id):
             await interaction.response.send_message(
@@ -214,7 +214,7 @@ class CharacterDashboard(discord.ui.View):
             return
         await interaction.response.send_modal(AvatarModal(self.user_id))
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Refresh", emoji="↻", style=discord.ButtonStyle.secondary, row=1)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         character = get_character(self.user_id)
         if character:
@@ -231,7 +231,7 @@ class CharacterDashboard(discord.ui.View):
                 view=self,
             )
 
-    @discord.ui.button(label="Delete OC", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Delete OC", emoji="×", style=discord.ButtonStyle.danger, row=1)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         delete_character(self.user_id)
         await interaction.response.edit_message(
