@@ -99,11 +99,11 @@ class CharacterDashboard(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Create / Edit", emoji="✦", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Create / Edit", style=discord.ButtonStyle.primary, row=0)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CoreModal(self.user_id, get_character(self.user_id)))
 
-    @discord.ui.button(label="Details", emoji="◇", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary, row=0)
     async def details(self, interaction: discord.Interaction, button: discord.ui.Button):
         character = get_character(self.user_id)
         if not character:
@@ -111,14 +111,14 @@ class CharacterDashboard(discord.ui.View):
             return
         await interaction.response.send_modal(DetailsModal(self.user_id, character))
 
-    @discord.ui.button(label="Avatar", emoji="◈", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Avatar", style=discord.ButtonStyle.secondary, row=0)
     async def avatar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not get_character(self.user_id):
             await interaction.response.send_message("Create your OC first.", ephemeral=True)
             return
         await interaction.response.send_modal(AvatarModal(self.user_id))
 
-    @discord.ui.button(label="Refresh", emoji="↻", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, row=1)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         character = get_character(self.user_id)
         if character:
@@ -126,7 +126,7 @@ class CharacterDashboard(discord.ui.View):
         else:
             await interaction.response.edit_message(embed=discord.Embed(title="⟐ OC Dashboard", description="You don't have an OC yet. Press **Create / Edit** to begin."), view=self)
 
-    @discord.ui.button(label="Delete OC", emoji="×", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Delete OC", style=discord.ButtonStyle.danger, row=1)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         delete_character(self.user_id)
         await interaction.response.edit_message(embed=discord.Embed(title="⟐ OC Dashboard", description="Your OC has been deleted."), view=self)
