@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from contextlib import closing
@@ -88,6 +89,73 @@ def init_db():
             ON characters(user_id)
         """)
 
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS server_config (
+                guild_id INTEGER PRIMARY KEY,
+                rp_enabled INTEGER NOT NULL DEFAULT 0,
+                rp_channel_ids TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        db.commit()
+
+
+def get_roleplay_settings(guild_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            "SELECT guild_id, rp_enabled, rp_channel_ids "
+            "FROM server_config WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+
+    if not row:
+        return {
+            "guild_id": guild_id,
+            "enabled": False,
+            "channel_ids": [],
+        }
+
+    try:
+        channel_ids = [
+            int(channel_id)
+            for channel_id in json.loads(row["rp_channel_ids"] or "[]")
+        ]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        channel_ids = []
+
+    return {
+        "guild_id": guild_id,
+        "enabled": bool(row["rp_enabled"]),
+        "channel_ids": channel_ids,
+    }
+
+
+def save_roleplay_settings(
+    guild_id: int,
+    enabled: bool,
+    channel_ids: list[int],
+):
+    unique_channels = list(dict.fromkeys(int(channel_id) for channel_id in channel_ids))
+
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO server_config (
+                guild_id, rp_enabled, rp_channel_ids, updated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                rp_enabled = excluded.rp_enabled,
+                rp_channel_ids = excluded.rp_channel_ids,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                guild_id,
+                1 if enabled else 0,
+                json.dumps(unique_channels),
+            ),
+        )
         db.commit()
 
 
