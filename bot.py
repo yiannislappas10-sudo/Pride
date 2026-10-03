@@ -1336,7 +1336,13 @@ class PlayerSettingsView(discord.ui.LayoutView):
 
             await interaction.delete_original_response()
         except discord.NotFound:
-            passbhook] = {}
+            pass
+
+
+class RPBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rp_webhook_cache: dict[int, discord.Webhook] = {}
 
     async def on_message(self, message: discord.Message):
         # Only relay ordinary human messages in explicitly configured RP channels.
