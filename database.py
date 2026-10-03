@@ -103,10 +103,23 @@ def init_db():
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 active_character_id INTEGER,
+                roleplay_active INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id, user_id)
             )
         """)
+        player_config_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(player_config)"
+            ).fetchall()
+        }
+        if "roleplay_active" not in player_config_columns:
+            db.execute(
+                "ALTER TABLE player_config ADD COLUMN "
+                "roleplay_active INTEGER NOT NULL DEFAULT 1"
+            )
+
         
         db.commit()
 
@@ -142,6 +155,45 @@ def save_active_character_id(
                 updated_at = CURRENT_TIMESTAMP
             """,
             (guild_id, user_id, character_id),
+        )
+        db.commit()
+
+
+def get_player_roleplay_active(guild_id: int, user_id: int) -> bool:
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT roleplay_active
+            FROM player_config
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        ).fetchone()
+
+    if not row:
+        return True
+
+    return bool(row["roleplay_active"])
+
+
+def save_player_roleplay_active(
+    guild_id: int,
+    user_id: int,
+    active: bool,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO player_config (
+                guild_id, user_id, active_character_id,
+                roleplay_active, updated_at
+            )
+            VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                roleplay_active = excluded.roleplay_active,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (guild_id, user_id, 1 if active else 0),
         )
         db.commit()
 
