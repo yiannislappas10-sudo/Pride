@@ -27,6 +27,7 @@ if not TOKEN:
 DEV_GUILD_ID = 1529246492332920872
 
 intents = discord.Intents.default()
+intents.message_content = True
 
 
 def clean(value: str, limit: int) -> str:
@@ -764,15 +765,23 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             else "None configured"
         )
 
+        selection_matches_saved = set(self.selected_channel_ids) == set(saved_channels)
+        selection_status = (
+            "Matches saved settings"
+            if selection_matches_saved
+            else "UNSAVED CHANGES — press Save Channels"
+        )
+
         panel = (
-            "## ⟐ Roleplay Settings\n"
-            "*Server-wide controls for the RP system*\n\n"
-            f"**Status:** {status}\n"
-            f"**Saved RP channels:** {saved_text}\n"
-            f"**Pending selection:** {selected_text}\n\n"
-            "Server RP can be opened or stopped here. When open, the bot "
-            "only responds in the saved RP channels. This will also control "
-            "the future episode system."
+            "## ⟐ Roleplay Settings\\n"
+            "*Server-wide controls for the RP system*\\n\\n"
+            f"**Status:** {status}\\n"
+            f"**Saved RP channels:** {saved_text}\\n"
+            f"**Selection:** {selected_text}\\n"
+            f"**Selection status:** {selection_status}\\n\\n"
+            "Choose the channels in the selector, then press Save Channels. "
+            "When server RP is ON, messages are relayed as the author's active OC "
+            "in saved RP channels, provided the player has personal RP turned ON."
         )
 
         self.add_item(discord.ui.TextDisplay(panel))
@@ -1188,6 +1197,95 @@ class PlayerSettingsView(discord.ui.LayoutView):
 
 
 class RPBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rp_webhook_cache: dict[int, discord.Webhook] = {}
+
+    async def on_message(self, message: discord.Message):
+        # Only relay ordinary human messages in explicitly configured RP channels.
+        if message.guild is None or message.author.bot or message.webhook_id:
+            return
+
+        if message.content.startswith("!"):
+            return
+
+        settings = get_roleplay_settings(message.guild.id)
+        if not settings["enabled"] or message.channel.id not in settings["channel_ids"]:
+            return
+
+        if not get_player_roleplay_active(message.guild.id, message.author.id):
+            return
+
+        character_id = get_active_character_id(message.guild.id, message.author.id)
+        character = get_character(character_id) if character_id else None
+        if not character or character["user_id"] != message.author.id:
+            return
+
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        me = message.guild.me
+        if me is None:
+            return
+        permissions = channel.permissions_for(me)
+        if not permissions.manage_webhooks or not permissions.manage_messages:
+            print(
+                f"Cannot relay RP message in channel {channel.id}: "
+                "bot needs Manage Webhooks and Manage Messages."
+            )
+            return
+
+        webhook = self.rp_webhook_cache.get(channel.id)
+        try:
+            if webhook is None:
+                hooks = await channel.webhooks()
+                webhook = next(
+                    (hook for hook in hooks if hook.name == "OC Roleplay Relay"),
+                    None,
+                )
+                if webhook is None:
+                    webhook = await channel.create_webhook(
+                        name="OC Roleplay Relay",
+                        reason="Relay roleplay messages using saved OC profiles",
+                    )
+                self.rp_webhook_cache[channel.id] = webhook
+
+            payload = (message.content or "").strip()
+            if message.attachments:
+                attachment_links = "\\n".join(item.url for item in message.attachments)
+                payload = f"{payload}\\n{attachment_links}".strip()
+            if not payload:
+                return
+            if len(payload) > 2000:
+                payload = payload[:1997] + "..."
+
+            send_kwargs = {
+                "content": payload,
+                "username": character["name"][:80],
+                "allowed_mentions": discord.AllowedMentions.none(),
+                "wait": True,
+            }
+            avatar_url = character.get("avatar_url")
+            if avatar_url:
+                send_kwargs["avatar_url"] = avatar_url
+
+            await webhook.send(**send_kwargs)
+            # Delete only after the OC relay succeeded, so a failed relay never eats a message.
+            await message.delete()
+        except discord.Forbidden:
+            print(
+                f"RP relay permission failure in channel {channel.id}; "
+                "original message was kept if relay could not be sent."
+            )
+            self.rp_webhook_cache.pop(channel.id, None)
+        except discord.HTTPException as exc:
+            print(f"RP relay failed in channel {channel.id}: {exc}")
+            self.rp_webhook_cache.pop(channel.id, None)
+        except Exception as exc:
+            print(f"Unexpected RP relay error in channel {channel.id}: {exc}")
+            self.rp_webhook_cache.pop(channel.id, None)
+
     async def setup_hook(self):
         init_db()
 
