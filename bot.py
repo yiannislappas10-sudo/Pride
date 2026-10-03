@@ -855,12 +855,12 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         )
 
         panel = (
-            "## ⟐ Roleplay Settings\\n"
-            "*Server-wide controls for the RP system*\\n\\n"
-            f"**Status:** {status}\\n"
-            f"**Saved RP channels:** {saved_text}\\n"
-            f"**Selection:** {selected_text}\\n"
-            f"**Selection status:** {selection_status}\\n\\n"
+            "## ⟐ Roleplay Settings\n"
+            "*Server-wide controls for the RP system*\n\n"
+            f"**Status:** {status}\n"
+            f"**Saved RP channels:** {saved_text}\n"
+            f"**Selection:** {selected_text}\n"
+            f"**Selection status:** {selection_status}\n\n"
             "Choose the channels in the selector, then press Save Channels. "
             "When server RP is ON, messages are relayed as the author's active OC "
             "in saved RP channels, provided the player has personal RP turned ON."
