@@ -772,6 +772,7 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             f"**Pending selection:** {selected_text}\n\n"
             "Server RP can be opened or stopped here. When open, the bot "
             "only responds in the saved RP channels. This will also control "
+            "the future episode system."
         )
 
         self.add_item(discord.ui.TextDisplay(panel))
@@ -822,8 +823,6 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         actions.add_item(stop)
         actions.add_item(start)
         actions.add_item(save)
-        actions.add_item(clear)
-        actions.add_item(close)
         actions.add_item(clear)
         actions.add_item(close)
         self.add_item(actions)
