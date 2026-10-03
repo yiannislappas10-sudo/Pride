@@ -1036,18 +1036,20 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             return
 
         self.stop()
-        # V2 LayoutView messages cannot be reliably cleared with view=None.
-        # Delete the original (including ephemeral) settings panel instead.
-        await interaction.response.defer()
-        await interaction.delete_original_response()
 
+        try:
+            await interaction.response.defer()
 
-class PlayerSettingsView(discord.ui.LayoutView):
-    def __init__(
-        self,
-        guild_id: int,
-        user_id: int,
-        selected_character_id: int | None = None,
+            if interaction.message is not None:
+                try:
+                    await interaction.message.delete()
+                    return
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+            await interaction.delete_original_response()
+        except discord.NotFound:
+            pass| None = None,
     ):
         super().__init__(timeout=900)
         self.guild_id = guild_id
@@ -1313,16 +1315,20 @@ class PlayerSettingsView(discord.ui.LayoutView):
             return
 
         self.stop()
-        # V2 LayoutView messages cannot be reliably cleared with view=None.
-        # Delete the original (including ephemeral) settings panel instead.
-        await interaction.response.defer()
-        await interaction.delete_original_response()
 
+        try:
+            await interaction.response.defer()
 
-class RPBot(commands.Bot):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.rp_webhook_cache: dict[int, discord.Webhook] = {}
+            if interaction.message is not None:
+                try:
+                    await interaction.message.delete()
+                    return
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+            await interaction.delete_original_response()
+        except discord.NotFound:
+            passbhook] = {}
 
     async def on_message(self, message: discord.Message):
         # Only relay ordinary human messages in explicitly configured RP channels.
@@ -1479,7 +1485,11 @@ oc_group = app_commands.Group(
     description="Open your OC dashboard.",
 )
 async def oc_dashboard(interaction: discord.Interaction):
-    if not await ensure_roleplay_channel(interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "This command can only be used inside a server.",
+            ephemeral=True,
+        )
         return
 
     active_id = get_active_character_id(
