@@ -16,6 +16,8 @@ from database import (
     save_roleplay_settings,
     get_active_character_id,
     save_active_character_id,
+    get_player_roleplay_active,
+    save_player_roleplay_active,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -768,8 +770,8 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             f"**Status:** {status}\n"
             f"**Saved RP channels:** {saved_text}\n"
             f"**Pending selection:** {selected_text}\n\n"
-            "The RP system will only respond inside the channels you save here. "
-            "This setting will also be used by the future episode system."
+            "Server RP can be opened or stopped here. When open, the bot "
+            "only responds in the saved RP channels. This will also control "
         )
 
         self.add_item(discord.ui.TextDisplay(panel))
@@ -788,13 +790,15 @@ class RoleplaySettingsView(discord.ui.LayoutView):
 
         actions = discord.ui.ActionRow()
 
-        toggle = discord.ui.Button(
-            label="Turn OFF" if self.enabled else "Turn ON",
-            style=(
-                discord.ButtonStyle.danger
-                if self.enabled
-                else discord.ButtonStyle.success
-            ),
+        stop = discord.ui.Button(
+            label="Stop Server RP",
+            style=discord.ButtonStyle.danger,
+            disabled=not self.enabled,
+        )
+        start = discord.ui.Button(
+            label="Open Server RP",
+            style=discord.ButtonStyle.success,
+            disabled=self.enabled,
         )
         save = discord.ui.Button(
             label="Save Channels",
@@ -809,13 +813,17 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             style=discord.ButtonStyle.secondary,
         )
 
-        toggle.callback = self.toggle_callback
+        stop.callback = self.stop_callback
+        start.callback = self.start_callback
         save.callback = self.save_callback
         clear.callback = self.clear_callback
         close.callback = self.close_callback
 
-        actions.add_item(toggle)
+        actions.add_item(stop)
+        actions.add_item(start)
         actions.add_item(save)
+        actions.add_item(clear)
+        actions.add_item(close)
         actions.add_item(clear)
         actions.add_item(close)
         self.add_item(actions)
@@ -851,21 +859,47 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             )
         )
 
-    async def toggle_callback(self, interaction: discord.Interaction):
+    async def stop_callback(self, interaction: discord.Interaction):
         if not await self.allowed(interaction):
             return
 
-        self.enabled = not self.enabled
+        self.enabled = False
         save_roleplay_settings(
             self.guild_id,
-            self.enabled,
+            False,
             self.selected_channel_ids,
         )
 
         await interaction.response.edit_message(
             view=RoleplaySettingsView(
                 self.guild_id,
-                enabled=self.enabled,
+                enabled=False,
+                selected_channel_ids=self.selected_channel_ids,
+            )
+        )
+
+    async def start_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        if not self.selected_channel_ids:
+            await interaction.response.send_message(
+                "Select at least one RP channel before opening server RP.",
+                ephemeral=True,
+            )
+            return
+
+        self.enabled = True
+        save_roleplay_settings(
+            self.guild_id,
+            True,
+            self.selected_channel_ids,
+        )
+
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=True,
                 selected_channel_ids=self.selected_channel_ids,
             )
         )
@@ -928,6 +962,7 @@ class PlayerSettingsView(discord.ui.LayoutView):
 
         characters = get_characters(user_id)
         saved_id = get_active_character_id(guild_id, user_id)
+        self.roleplay_active = get_player_roleplay_active(guild_id, user_id)
 
         if selected_character_id is None:
             selected_character_id = saved_id
@@ -950,13 +985,15 @@ class PlayerSettingsView(discord.ui.LayoutView):
         )
         active_name = active["name"] if active else "No OC selected"
 
+        player_status = "ON" if self.roleplay_active else "OFF"
+
         panel = (
             "## ⟐ Roleplay Settings\n"
             "*Your personal roleplay controls*\n\n"
+            f"**Personal RP:** {player_status}\n"
             f"**Active OC:** {active_name}\n"
-            "This is the OC Pride will use for your roleplay identity "
-            "and future episode participation.\n\n"
-            "Choose a character below and save it."
+            "Choose the OC you want to use, then save it. "
+            "You can also stop or start your own RP participation here."
         )
 
         self.add_item(discord.ui.TextDisplay(panel))
@@ -1006,6 +1043,14 @@ class PlayerSettingsView(discord.ui.LayoutView):
             style=discord.ButtonStyle.primary,
             disabled=not bool(options),
         )
+        toggle = discord.ui.Button(
+            label="Stop My RP" if self.roleplay_active else "Start My RP",
+            style=(
+                discord.ButtonStyle.danger
+                if self.roleplay_active
+                else discord.ButtonStyle.success
+            ),
+        )
         dashboard = discord.ui.Button(
             label="OC Dashboard",
             style=discord.ButtonStyle.secondary,
@@ -1016,10 +1061,12 @@ class PlayerSettingsView(discord.ui.LayoutView):
         )
 
         save.callback = self.save_callback
+        toggle.callback = self.toggle_callback
         dashboard.callback = self.dashboard_callback
         close.callback = self.close_callback
 
         actions.add_item(save)
+        actions.add_item(toggle)
         actions.add_item(dashboard)
         actions.add_item(close)
         self.add_item(actions)
@@ -1093,6 +1140,25 @@ class PlayerSettingsView(discord.ui.LayoutView):
             self.guild_id,
             self.user_id,
             self.selected_character_id,
+        )
+
+        await interaction.response.edit_message(
+            view=PlayerSettingsView(
+                self.guild_id,
+                self.user_id,
+                self.selected_character_id,
+            )
+        )
+
+    async def toggle_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.roleplay_active = not self.roleplay_active
+        save_player_roleplay_active(
+            self.guild_id,
+            self.user_id,
+            self.roleplay_active,
         )
 
         await interaction.response.edit_message(
@@ -1223,7 +1289,11 @@ async def oc_view(
     description="Open your personal roleplay settings.",
 )
 async def oc_settings(interaction: discord.Interaction):
-    if not await ensure_roleplay_channel(interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "This command can only be used inside a server.",
+            ephemeral=True,
+        )
         return
 
     await interaction.response.send_message(
