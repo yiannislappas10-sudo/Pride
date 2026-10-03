@@ -55,44 +55,47 @@ def trim(value: str, limit: int = 1024) -> str:
 
 def smart_rp_format(character_name: str, content: str) -> str:
     """Local, zero-cost RP formatter. No API or external model required."""
-    text = re.sub(r"\\s+", " ", (content or "").strip())
+    text = re.sub(r"\s+", " ", (content or "").strip())
     if not text:
         return text
 
     name = character_name.strip() or "Character"
     lower = text.lower()
 
-    # Preserve explicit actions already written by the player.
-    explicit = bool(re.search(r"(^|\\s)(\\*[^*]+\\*|_[^_]+_|\\([^)]{2,80}\\))($|\\s)", text))
+    # Preserve actions/cues already written by the player.
+    explicit = bool(re.search(
+        r"(^|\s)(\*[^*]+\*|_[^_]+_|\([^)]{2,80}\))($|\s)",
+        text,
+    ))
 
     cue = None
     action = None
 
-    # Delivery / volume cues.
-    if re.search(r"\\b(whisper|whispers|quietly|keep your voice down|lower your voice)\\b", lower):
+    # Delivery / emotion cues.
+    if re.search(r"\b(whisper|whispers|quietly|keep your voice down|lower your voice)\b", lower):
         cue = "(whispers)"
     elif text.isupper() and len(re.sub(r"[^A-Z]", "", text)) >= 3:
         cue = "(shouts)"
-    elif re.search(r"[!?]{2,}|\\b(what\\s+the|no way|are you serious)\\b", lower):
+    elif re.search(r"[!?]{2,}|\b(what\s+the|no way|are you serious)\b", lower):
         cue = "(startled)"
-    elif re.search(r"\\b(ugh|sigh|sighs|fine\\.\\.\\.|whatever\\.\\.\\.)\\b", lower):
+    elif re.search(r"\b(ugh|sigh|sighs|fine\.\.\.|whatever\.\.\.)\b", lower):
         cue = "(sighs)"
 
-    # Tiny contextual actions for messages that naturally imply them.
+    # Contextual actions for messages that naturally imply them.
     if not explicit and cue is None:
-        if re.search(r"\\b(is anyone here|anyone here|hello\\?|anybody here)\\b", lower):
+        if re.search(r"\b(is anyone here|anyone here|hello\?|anybody here)\b", lower):
             action = "*looks around*"
-        elif re.search(r"\\b(are you there|can you hear me|hello)\\b", lower):
+        elif re.search(r"\b(are you there|can you hear me|hello)\b", lower):
             action = "*looks around*"
-        elif re.search(r"\\b(wait|hold on|one second)\\b", lower):
+        elif re.search(r"\b(wait|hold on|one second)\b", lower):
             action = "*pauses*"
-        elif re.search(r"\\b(come here|over here|follow me)\\b", lower):
+        elif re.search(r"\b(come here|over here|follow me)\b", lower):
             action = "*gestures for them to come closer*"
-        elif re.search(r"\\b(look at this|look here|check this out)\\b", lower):
+        elif re.search(r"\b(look at this|look here|check this out)\b", lower):
             action = "*gestures toward it*"
-        elif re.search(r"\\b(i'm leaving|im leaving|i should go|gotta go|have to go)\\b", lower):
+        elif re.search(r"\b(i'm leaving|im leaving|i should go|gotta go|have to go)\b", lower):
             action = "*turns to leave*"
-        elif re.search(r"\\b(come in|enter|you can come in)\\b", lower):
+        elif re.search(r"\b(come in|enter|you can come in)\b", lower):
             action = "*motions toward the entrance*"
 
     if explicit:
@@ -102,7 +105,6 @@ def smart_rp_format(character_name: str, content: str) -> str:
     elif action:
         formatted = f"{action} {text}"
     else:
-        # Keep ordinary dialogue untouched; smart formatting should not overact.
         formatted = text
 
     return f"{name}: {formatted}"[:2000]
