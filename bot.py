@@ -14,6 +14,8 @@ from database import (
     delete_character,
     get_roleplay_settings,
     save_roleplay_settings,
+    get_active_character_id,
+    save_active_character_id,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -111,6 +113,13 @@ class CoreModal(discord.ui.Modal):
             data,
             character_id=self.character_id,
         )
+
+        if interaction.guild is not None:
+            save_active_character_id(
+                interaction.guild.id,
+                self.user_id,
+                new_id,
+            )
 
         await interaction.response.edit_message(
             view=CharacterDashboard(self.user_id, new_id)
@@ -553,6 +562,13 @@ class CharacterDashboard(discord.ui.LayoutView):
             )
             return
 
+        if interaction.guild is not None:
+            save_active_character_id(
+                interaction.guild.id,
+                self.user_id,
+                character_id,
+            )
+
         await interaction.response.edit_message(
             view=CharacterDashboard(self.user_id, character_id)
         )
@@ -686,7 +702,7 @@ async def ensure_roleplay_channel(
     if not settings["enabled"]:
         await interaction.response.send_message(
             "The roleplay system is currently OFF in this server.\n"
-            "An administrator can configure it with /oc settings.",
+            "An administrator can configure it with /oc admin.",
             ephemeral=True,
         )
         return False
@@ -696,7 +712,7 @@ async def ensure_roleplay_channel(
     if not channel_ids:
         await interaction.response.send_message(
             "No roleplay channels have been configured yet.\n"
-            "An administrator can choose them with /oc settings.",
+            "An administrator can choose them with /oc admin.",
             ephemeral=True,
         )
         return False
@@ -899,6 +915,213 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         await interaction.response.edit_message(view=None)
 
 
+class PlayerSettingsView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        guild_id: int,
+        user_id: int,
+        selected_character_id: int | None = None,
+    ):
+        super().__init__(timeout=900)
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+        characters = get_characters(user_id)
+        saved_id = get_active_character_id(guild_id, user_id)
+
+        if selected_character_id is None:
+            selected_character_id = saved_id
+
+        if selected_character_id is None and characters:
+            selected_character_id = characters[0]["character_id"]
+
+        valid_ids = {item["character_id"] for item in characters}
+        if selected_character_id not in valid_ids:
+            selected_character_id = (
+                characters[0]["character_id"] if characters else None
+            )
+
+        self.selected_character_id = selected_character_id
+
+        active = (
+            get_character(self.selected_character_id)
+            if self.selected_character_id
+            else None
+        )
+        active_name = active["name"] if active else "No OC selected"
+
+        panel = (
+            "## ⟐ Roleplay Settings\n"
+            "*Your personal roleplay controls*\n\n"
+            f"**Active OC:** {active_name}\n"
+            "This is the OC Pride will use for your roleplay identity "
+            "and future episode participation.\n\n"
+            "Choose a character below and save it."
+        )
+
+        self.add_item(discord.ui.TextDisplay(panel))
+        self.add_item(discord.ui.Separator())
+
+        row = discord.ui.ActionRow()
+        options = [
+            discord.SelectOption(
+                label=trim(character["name"], 100),
+                description=f"OC #{index + 1}",
+                value=str(character["character_id"]),
+                default=character["character_id"] == self.selected_character_id,
+            )
+            for index, character in enumerate(characters[:25])
+        ]
+
+        if options:
+            self.character_select = discord.ui.Select(
+                placeholder="Choose your active OC",
+                options=options,
+                min_values=1,
+                max_values=1,
+            )
+        else:
+            self.character_select = discord.ui.Select(
+                placeholder="No OCs available",
+                options=[
+                    discord.SelectOption(
+                        label="No OCs available",
+                        value="none",
+                        default=True,
+                    )
+                ],
+                min_values=1,
+                max_values=1,
+                disabled=True,
+            )
+
+        self.character_select.callback = self.select_callback
+        row.add_item(self.character_select)
+        self.add_item(row)
+
+        actions = discord.ui.ActionRow()
+
+        save = discord.ui.Button(
+            label="Save Active OC",
+            style=discord.ButtonStyle.primary,
+            disabled=not bool(options),
+        )
+        dashboard = discord.ui.Button(
+            label="OC Dashboard",
+            style=discord.ButtonStyle.secondary,
+        )
+        close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        save.callback = self.save_callback
+        dashboard.callback = self.dashboard_callback
+        close.callback = self.close_callback
+
+        actions.add_item(save)
+        actions.add_item(dashboard)
+        actions.add_item(close)
+        self.add_item(actions)
+
+        if len(characters) > 25:
+            self.add_item(
+                discord.ui.TextDisplay(
+                    "*Only the first 25 OCs are shown here.*"
+                )
+            )
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message(
+                "This settings panel is no longer valid here.",
+                ephemeral=True,
+            )
+            return False
+
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This settings panel belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        selected = self.character_select.values[0]
+        if selected == "none":
+            await interaction.response.send_message(
+                "Create an OC first.",
+                ephemeral=True,
+            )
+            return
+
+        self.selected_character_id = int(selected)
+
+        await interaction.response.edit_message(
+            view=PlayerSettingsView(
+                self.guild_id,
+                self.user_id,
+                self.selected_character_id,
+            )
+        )
+
+    async def save_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        if self.selected_character_id is None:
+            await interaction.response.send_message(
+                "Create an OC first.",
+                ephemeral=True,
+            )
+            return
+
+        character = get_character(self.selected_character_id)
+        if not character or character["user_id"] != self.user_id:
+            await interaction.response.send_message(
+                "That OC no longer exists.",
+                ephemeral=True,
+            )
+            return
+
+        save_active_character_id(
+            self.guild_id,
+            self.user_id,
+            self.selected_character_id,
+        )
+
+        await interaction.response.edit_message(
+            view=PlayerSettingsView(
+                self.guild_id,
+                self.user_id,
+                self.selected_character_id,
+            )
+        )
+
+    async def dashboard_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        await interaction.response.edit_message(
+            view=CharacterDashboard(
+                self.user_id,
+                self.selected_character_id,
+            )
+        )
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+
 class RPBot(commands.Bot):
     async def setup_hook(self):
         init_db()
@@ -949,8 +1172,13 @@ async def oc_dashboard(interaction: discord.Interaction):
     if not await ensure_roleplay_channel(interaction):
         return
 
+    active_id = get_active_character_id(
+        interaction.guild.id,
+        interaction.user.id,
+    )
+
     await interaction.response.send_message(
-        view=CharacterDashboard(interaction.user.id),
+        view=CharacterDashboard(interaction.user.id, active_id),
         ephemeral=True,
     )
 
@@ -992,9 +1220,26 @@ async def oc_view(
 
 @oc_group.command(
     name="settings",
-    description="Configure where the roleplay system can be used.",
+    description="Open your personal roleplay settings.",
 )
 async def oc_settings(interaction: discord.Interaction):
+    if not await ensure_roleplay_channel(interaction):
+        return
+
+    await interaction.response.send_message(
+        view=PlayerSettingsView(
+            interaction.guild.id,
+            interaction.user.id,
+        ),
+        ephemeral=True,
+    )
+
+
+@oc_group.command(
+    name="admin",
+    description="Open the roleplay administrator panel.",
+)
+async def oc_admin(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message(
             "This command can only be used inside a server.",
@@ -1004,7 +1249,7 @@ async def oc_settings(interaction: discord.Interaction):
 
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message(
-            "You need Manage Server to configure roleplay channels.",
+            "You need Manage Server to use the roleplay admin panel.",
             ephemeral=True,
         )
         return
