@@ -954,7 +954,10 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             return
 
         self.stop()
-        await interaction.response.edit_message(view=None)
+        # V2 LayoutView messages cannot be reliably cleared with view=None.
+        # Delete the original (including ephemeral) settings panel instead.
+        await interaction.response.defer()
+        await interaction.delete_original_response()
 
 
 class PlayerSettingsView(discord.ui.LayoutView):
@@ -1193,7 +1196,10 @@ class PlayerSettingsView(discord.ui.LayoutView):
             return
 
         self.stop()
-        await interaction.response.edit_message(view=None)
+        # V2 LayoutView messages cannot be reliably cleared with view=None.
+        # Delete the original (including ephemeral) settings panel instead.
+        await interaction.response.defer()
+        await interaction.delete_original_response()
 
 
 class RPBot(commands.Bot):
