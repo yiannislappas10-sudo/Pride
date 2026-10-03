@@ -92,12 +92,14 @@ Return ONLY the finished Discord RP message.
 
 Rules:
 - Start with the exact character name.
-- Decide whether plain dialogue, a delivery cue, or a small action fits.
-- Natural examples include: Character Name: hello, Character Name (whispers): hello, Character Name *smiles*: hello, and Character Name: hello *smiles*
-- Use cues like whispers, murmurs, shouts, laughs, sighs, gasps, and similar cues only when the message actually suggests them.
-- Use actions like *looks around*, *smiles*, *steps closer*, *pauses*, etc. only when reasonably implied.
-- Do not force an action or cue onto every message.
-- Never invent facts, emotions, actions, lore, or extra dialogue.
+- Make the RP feel alive, but stay faithful to what the user actually wrote.
+- Prefer a small, natural delivery cue or action when the wording clearly gives you a reasonable opportunity to add one.
+- For questions, greetings, calls, or messages that imply the character is looking/listening/searching for someone, a tiny contextual action is encouraged when natural. Example: "is anyone here?" can become "Character Name *looks around*: Is anyone here?"
+- For wording that clearly implies volume or delivery, use a fitting cue: "keep your voice down" can become "(whispers)", "WHAT?!" can become "(shouts)", "ugh, fine..." can become "(sighs)".
+- For physical wording, preserve it as an action rather than inventing a new action.
+- Keep actions and cues short and subtle; normally use at most one small action or one delivery cue per message.
+- Plain dialogue is still correct when no cue or action is naturally supported.
+- Never invent facts, emotions, actions, lore, relationships, or extra dialogue that the user's message does not support.
 - Preserve the user's meaning and wording as much as possible.
 - Do not mention AI, formatting, instructions, or these examples.
 - Do not use code fences."""
