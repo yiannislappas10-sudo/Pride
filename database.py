@@ -104,6 +104,7 @@ def init_db():
                 user_id INTEGER NOT NULL,
                 active_character_id INTEGER,
                 roleplay_active INTEGER NOT NULL DEFAULT 1,
+                auto_rp_format INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id, user_id)
             )
@@ -120,7 +121,29 @@ def init_db():
                 "roleplay_active INTEGER NOT NULL DEFAULT 1"
             )
 
-        
+        if "auto_rp_format" not in player_config_columns:
+            db.execute(
+                "ALTER TABLE player_config ADD COLUMN "
+                "auto_rp_format INTEGER NOT NULL DEFAULT 0"
+            )
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS rp_learning_examples (
+                example_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                input_text TEXT NOT NULL,
+                output_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_rp_learning_lookup
+            ON rp_learning_examples(guild_id, user_id, character_id, example_id DESC)
+        """)
+
         db.commit()
 
 
@@ -197,6 +220,106 @@ def save_player_roleplay_active(
         )
         db.commit()
 
+
+def get_player_auto_rp_format(guild_id: int, user_id: int) -> bool:
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT auto_rp_format
+            FROM player_config
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        ).fetchone()
+
+    return bool(row["auto_rp_format"]) if row else False
+
+
+def save_player_auto_rp_format(
+    guild_id: int,
+    user_id: int,
+    enabled: bool,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO player_config (
+                guild_id, user_id, active_character_id,
+                roleplay_active, auto_rp_format, updated_at
+            )
+            VALUES (?, ?, NULL, 1, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                auto_rp_format = excluded.auto_rp_format,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (guild_id, user_id, 1 if enabled else 0),
+        )
+        db.commit()
+
+
+def get_rp_learning_examples(
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+    limit: int = 8,
+):
+    safe_limit = max(1, min(int(limit), 20))
+    with closing(connect()) as db:
+        rows = db.execute(
+            f"""
+            SELECT input_text, output_text
+            FROM rp_learning_examples
+            WHERE guild_id = ? AND user_id = ? AND character_id = ?
+            ORDER BY example_id DESC
+            LIMIT {safe_limit}
+            """,
+            (guild_id, user_id, character_id),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def save_rp_learning_example(
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+    input_text: str,
+    output_text: str,
+):
+    input_text = (input_text or "").strip()[:2000]
+    output_text = (output_text or "").strip()[:2000]
+    if not input_text or not output_text:
+        return
+
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO rp_learning_examples (
+                guild_id, user_id, character_id, input_text, output_text
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (guild_id, user_id, character_id, input_text, output_text),
+        )
+
+        db.execute(
+            """
+            DELETE FROM rp_learning_examples
+            WHERE guild_id = ? AND user_id = ? AND character_id = ?
+              AND example_id NOT IN (
+                  SELECT example_id
+                  FROM rp_learning_examples
+                  WHERE guild_id = ? AND user_id = ? AND character_id = ?
+                  ORDER BY example_id DESC
+                  LIMIT 200
+              )
+            """,
+            (
+                guild_id, user_id, character_id,
+                guild_id, user_id, character_id,
+            ),
+        )
+        db.commit()
 
 def get_roleplay_settings(guild_id: int):
     with closing(connect()) as db:
