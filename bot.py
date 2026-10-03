@@ -4,6 +4,7 @@ import re
 import discord
 from discord import app_commands
 from discord.ext import commands
+from openai import AsyncOpenAI
 
 from database import (
     init_db,
@@ -18,11 +19,19 @@ from database import (
     save_active_character_id,
     get_player_roleplay_active,
     save_player_roleplay_active,
+    get_player_auto_rp_format,
+    save_player_auto_rp_format,
+    get_rp_learning_examples,
+    save_rp_learning_example,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing.")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PRIDE_AI_MODEL = os.getenv("PRIDE_AI_MODEL", "gpt-6-astra")
+ai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 DEV_GUILD_ID = 1529246492332920872
 
