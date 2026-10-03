@@ -98,6 +98,51 @@ def init_db():
             )
         """)
 
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS player_config (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                active_character_id INTEGER,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        
+        db.commit()
+
+
+def get_active_character_id(guild_id: int, user_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT active_character_id
+            FROM player_config
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        ).fetchone()
+
+    return int(row["active_character_id"]) if row and row["active_character_id"] else None
+
+
+def save_active_character_id(
+    guild_id: int,
+    user_id: int,
+    character_id: int | None,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO player_config (
+                guild_id, user_id, active_character_id, updated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                active_character_id = excluded.active_character_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (guild_id, user_id, character_id),
+        )
         db.commit()
 
 
