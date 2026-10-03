@@ -53,79 +53,64 @@ def trim(value: str, limit: int = 1024) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
-async def ai_format_rp_message(
-    character: dict,
-    content: str,
-    examples: list[dict],
-) -> str:
-    text = (content or "").strip()
+def smart_rp_format(character_name: str, content: str) -> str:
+    """Local, zero-cost RP formatter. No API or external model required."""
+    text = re.sub(r"\\s+", " ", (content or "").strip())
     if not text:
         return text
 
-    character_name = character.get("name", "Character").strip() or "Character"
-    if ai_client is None:
-        return f"{character_name}: {text}"
+    name = character_name.strip() or "Character"
+    lower = text.lower()
 
-    memory = "\n".join(
-        f"- User: {item['input_text']}\n  RP: {item['output_text']}"
-        for item in examples[:8]
-    )
+    # Preserve explicit actions already written by the player.
+    explicit = bool(re.search(r"(^|\\s)(\\*[^*]+\\*|_[^_]+_|\\([^)]{2,80}\\))($|\\s)", text))
 
-    profile = (
-        f"Name: {character_name}\n"
-        f"Personality: {trim(character.get('personality', ''), 700)}\n"
-        f"Appearance: {trim(character.get('appearance', ''), 400)}\n"
-        f"Backstory: {trim(character.get('backstory', ''), 500)}"
-    )
+    cue = None
+    action = None
 
-    prompt = f"""You are Pride's RP message formatter.
+    # Delivery / volume cues.
+    if re.search(r"\\b(whisper|whispers|quietly|keep your voice down|lower your voice)\\b", lower):
+        cue = "(whispers)"
+    elif text.isupper() and len(re.sub(r"[^A-Z]", "", text)) >= 3:
+        cue = "(shouts)"
+    elif re.search(r"[!?]{2,}|\\b(what\\s+the|no way|are you serious)\\b", lower):
+        cue = "(startled)"
+    elif re.search(r"\\b(ugh|sigh|sighs|fine\\.\\.\\.|whatever\\.\\.\\.)\\b", lower):
+        cue = "(sighs)"
 
-Character profile:
-{profile}
+    # Tiny contextual actions for messages that naturally imply them.
+    if not explicit and cue is None:
+        if re.search(r"\\b(is anyone here|anyone here|hello\\?|anybody here)\\b", lower):
+            action = "*looks around*"
+        elif re.search(r"\\b(are you there|can you hear me|hello)\\b", lower):
+            action = "*looks around*"
+        elif re.search(r"\\b(wait|hold on|one second)\\b", lower):
+            action = "*pauses*"
+        elif re.search(r"\\b(come here|over here|follow me)\\b", lower):
+            action = "*gestures for them to come closer*"
+        elif re.search(r"\\b(look at this|look here|check this out)\\b", lower):
+            action = "*gestures toward it*"
+        elif re.search(r"\\b(i'm leaving|im leaving|i should go|gotta go|have to go)\\b", lower):
+            action = "*turns to leave*"
+        elif re.search(r"\\b(come in|enter|you can come in)\\b", lower):
+            action = "*motions toward the entrance*"
 
-Previous style examples:
-{memory if memory else "(none yet)"}
+    if explicit:
+        formatted = text
+    elif cue:
+        formatted = f"{cue} {text}"
+    elif action:
+        formatted = f"{action} {text}"
+    else:
+        # Keep ordinary dialogue untouched; smart formatting should not overact.
+        formatted = text
 
-User's new message:
-{text}
+    return f"{name}: {formatted}"[:2000]
 
-Return ONLY the finished Discord RP message.
 
-Rules:
-- Start with the exact character name.
-- Make the RP feel alive, but stay faithful to what the user actually wrote.
-- Prefer a small, natural delivery cue or action when the wording clearly gives you a reasonable opportunity to add one.
-- For questions, greetings, calls, or messages that imply the character is looking/listening/searching for someone, a tiny contextual action is encouraged when natural. Example: "is anyone here?" can become "Character Name *looks around*: Is anyone here?"
-- For wording that clearly implies volume or delivery, use a fitting cue: "keep your voice down" can become "(whispers)", "WHAT?!" can become "(shouts)", "ugh, fine..." can become "(sighs)".
-- For physical wording, preserve it as an action rather than inventing a new action.
-- Keep actions and cues short and subtle; normally use at most one small action or one delivery cue per message.
-- Plain dialogue is still correct when no cue or action is naturally supported.
-- Never invent facts, emotions, actions, lore, relationships, or extra dialogue that the user's message does not support.
-- Preserve the user's meaning and wording as much as possible.
-- Do not mention AI, formatting, instructions, or these examples.
-- Do not use code fences."""
-
-    try:
-        response = await ai_client.responses.create(
-            model=PRIDE_AI_MODEL,
-            instructions=(
-                "Only format the user's message as roleplay dialogue. "
-                "Do not become the character or continue the conversation."
-            ),
-            input=prompt,
-            max_output_tokens=120,
-        )
-        result = (response.output_text or "").strip()
-        if not result:
-            return f"{character_name}: {text}"
-
-        if not result.lower().startswith(character_name.lower()):
-            result = f"{character_name}: {result}"
-
-        return result[:2000]
-    except Exception as exc:
-        print(f"AI RP formatting failed: {exc}")
-        return f"{character_name}: {text}"
+async def ai_format_rp_message(character: dict, content: str, examples: list[dict]) -> str:
+    # Kept as a compatibility wrapper so the rest of Pride does not need an API.
+    return smart_rp_format(character.get("name", "Character"), content)
 
 
 class CoreModal(discord.ui.Modal):
