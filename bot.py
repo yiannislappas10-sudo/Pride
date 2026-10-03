@@ -1070,6 +1070,10 @@ class PlayerSettingsView(discord.ui.LayoutView):
             )
 
         self.selected_character_id = selected_character_id
+        self.auto_rp_format = get_player_auto_rp_format(
+            guild_id,
+            user_id,
+        )
 
         active = (
             get_character(self.selected_character_id)
@@ -1079,14 +1083,16 @@ class PlayerSettingsView(discord.ui.LayoutView):
         active_name = active["name"] if active else "No OC selected"
 
         player_status = "ON" if self.roleplay_active else "OFF"
+        ai_status = "ON" if self.auto_rp_format else "OFF"
 
         panel = (
             "## ⟐ Roleplay Settings\n"
             "*Your personal roleplay controls*\n\n"
             f"**Personal RP:** {player_status}\n"
             f"**Active OC:** {active_name}\n"
-            "Choose the OC you want to use, then save it. "
-            "You can also stop or start your own RP participation here."
+            f"**AI RP Format:** {ai_status}\n"
+            "When enabled, Pride uses AI to decide when to use "
+            "dialogue cues and small RP actions."
         )
 
         self.add_item(discord.ui.TextDisplay(panel))
@@ -1144,6 +1150,14 @@ class PlayerSettingsView(discord.ui.LayoutView):
                 else discord.ButtonStyle.success
             ),
         )
+        ai_format = discord.ui.Button(
+            label="Disable AI RP Format" if self.auto_rp_format else "Enable AI RP Format",
+            style=(
+                discord.ButtonStyle.danger
+                if self.auto_rp_format
+                else discord.ButtonStyle.success
+            ),
+        )
         dashboard = discord.ui.Button(
             label="OC Dashboard",
             style=discord.ButtonStyle.secondary,
@@ -1155,11 +1169,13 @@ class PlayerSettingsView(discord.ui.LayoutView):
 
         save.callback = self.save_callback
         toggle.callback = self.toggle_callback
+        ai_format.callback = self.auto_format_callback
         dashboard.callback = self.dashboard_callback
         close.callback = self.close_callback
 
         actions.add_item(save)
         actions.add_item(toggle)
+        actions.add_item(ai_format)
         actions.add_item(dashboard)
         actions.add_item(close)
         self.add_item(actions)
@@ -1262,6 +1278,25 @@ class PlayerSettingsView(discord.ui.LayoutView):
             )
         )
 
+    async def auto_format_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.auto_rp_format = not self.auto_rp_format
+        save_player_auto_rp_format(
+            self.guild_id,
+            self.user_id,
+            self.auto_rp_format,
+        )
+
+        await interaction.response.edit_message(
+            view=PlayerSettingsView(
+                self.guild_id,
+                self.user_id,
+                self.selected_character_id,
+            )
+        )
+
     async def dashboard_callback(self, interaction: discord.Interaction):
         if not await self.allowed(interaction):
             return
@@ -1340,6 +1375,30 @@ class RPBot(commands.Bot):
                 self.rp_webhook_cache[channel.id] = webhook
 
             payload = (message.content or "").strip()
+
+            if get_player_auto_rp_format(
+                message.guild.id,
+                message.author.id,
+            ):
+                examples = get_rp_learning_examples(
+                    message.guild.id,
+                    message.author.id,
+                    character["character_id"],
+                    limit=8,
+                )
+                payload = await ai_format_rp_message(
+                    character,
+                    payload,
+                    examples,
+                )
+                save_rp_learning_example(
+                    message.guild.id,
+                    message.author.id,
+                    character["character_id"],
+                    message.content or "",
+                    payload,
+                )
+
             if message.attachments:
                 attachment_links = "\\n".join(item.url for item in message.attachments)
                 payload = f"{payload}\\n{attachment_links}".strip()
