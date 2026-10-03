@@ -52,6 +52,79 @@ def trim(value: str, limit: int = 1024) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+async def ai_format_rp_message(
+    character: dict,
+    content: str,
+    examples: list[dict],
+) -> str:
+    text = (content or "").strip()
+    if not text:
+        return text
+
+    character_name = character.get("name", "Character").strip() or "Character"
+    if ai_client is None:
+        return f"{character_name}: {text}"
+
+    memory = "\n".join(
+        f"- User: {item['input_text']}\n  RP: {item['output_text']}"
+        for item in examples[:8]
+    )
+
+    profile = (
+        f"Name: {character_name}\n"
+        f"Personality: {trim(character.get('personality', ''), 700)}\n"
+        f"Appearance: {trim(character.get('appearance', ''), 400)}\n"
+        f"Backstory: {trim(character.get('backstory', ''), 500)}"
+    )
+
+    prompt = f"""You are Pride's RP message formatter.
+
+Character profile:
+{profile}
+
+Previous style examples:
+{memory if memory else "(none yet)"}
+
+User's new message:
+{text}
+
+Return ONLY the finished Discord RP message.
+
+Rules:
+- Start with the exact character name.
+- Decide whether plain dialogue, a delivery cue, or a small action fits.
+- Natural examples include: Character Name: hello, Character Name (whispers): hello, Character Name *smiles*: hello, and Character Name: hello *smiles*
+- Use cues like whispers, murmurs, shouts, laughs, sighs, gasps, and similar cues only when the message actually suggests them.
+- Use actions like *looks around*, *smiles*, *steps closer*, *pauses*, etc. only when reasonably implied.
+- Do not force an action or cue onto every message.
+- Never invent facts, emotions, actions, lore, or extra dialogue.
+- Preserve the user's meaning and wording as much as possible.
+- Do not mention AI, formatting, instructions, or these examples.
+- Do not use code fences."""
+
+    try:
+        response = await ai_client.responses.create(
+            model=PRIDE_AI_MODEL,
+            instructions=(
+                "Only format the user's message as roleplay dialogue. "
+                "Do not become the character or continue the conversation."
+            ),
+            input=prompt,
+            max_output_tokens=120,
+        )
+        result = (response.output_text or "").strip()
+        if not result:
+            return f"{character_name}: {text}"
+
+        if not result.lower().startswith(character_name.lower()):
+            result = f"{character_name}: {result}"
+
+        return result[:2000]
+    except Exception as exc:
+        print(f"AI RP formatting failed: {exc}")
+        return f"{character_name}: {text}"
+
+
 class CoreModal(discord.ui.Modal):
     def __init__(
         self,
