@@ -1049,7 +1049,15 @@ class RoleplaySettingsView(discord.ui.LayoutView):
 
             await interaction.delete_original_response()
         except discord.NotFound:
-            pass| None = None,
+            pass
+
+
+class PlayerSettingsView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        guild_id: int,
+        user_id: int,
+        selected_character_id: int | None = None,
     ):
         super().__init__(timeout=900)
         self.guild_id = guild_id
