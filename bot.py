@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 
@@ -1396,7 +1397,38 @@ class RPBot(commands.Bot):
                     )
                 self.rp_webhook_cache[channel.id] = webhook
 
-            payload = (message.content or "").strip()
+            # Send the relay immediately using the user's original wording.
+            # AI formatting happens after the relay so Discord never appears to "hang"
+            # while waiting for the model.
+            original_payload = (message.content or "").strip()
+
+            if message.attachments:
+                attachment_links = "\\n".join(item.url for item in message.attachments)
+                original_payload = (
+                    f"{original_payload}\\n{attachment_links}"
+                    if original_payload
+                    else attachment_links
+                ).strip()
+
+            if not original_payload:
+                return
+            if len(original_payload) > 2000:
+                original_payload = original_payload[:1997] + "..."
+
+            send_kwargs = {
+                "content": f'{character["name"]}: {original_payload}',
+                "username": character["name"][:80],
+                "allowed_mentions": discord.AllowedMentions.none(),
+                "wait": True,
+            }
+            avatar_url = character.get("avatar_url")
+            if avatar_url:
+                send_kwargs["avatar_url"] = avatar_url
+
+            relay_message = await webhook.send(**send_kwargs)
+
+            # Delete the user's message immediately after the relay is safely posted.
+            await message.delete()
 
             if get_player_auto_rp_format(
                 message.guild.id,
@@ -1408,11 +1440,27 @@ class RPBot(commands.Bot):
                     character["character_id"],
                     limit=8,
                 )
-                payload = await ai_format_rp_message(
-                    character,
-                    payload,
-                    examples,
-                )
+                try:
+                    payload = await asyncio.wait_for(
+                        ai_format_rp_message(
+                            character,
+                            message.content or "",
+                            examples,
+                        ),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    payload = f'{character["name"]}: {message.content.strip()}'
+
+                if message.attachments:
+                    attachment_links = "\\n".join(
+                        item.url for item in message.attachments
+                    )
+                    payload = f"{payload}\\n{attachment_links}".strip()
+
+                if len(payload) > 2000:
+                    payload = payload[:1997] + "..."
+
                 save_rp_learning_example(
                     message.guild.id,
                     message.author.id,
@@ -1421,27 +1469,13 @@ class RPBot(commands.Bot):
                     payload,
                 )
 
-            if message.attachments:
-                attachment_links = "\\n".join(item.url for item in message.attachments)
-                payload = f"{payload}\\n{attachment_links}".strip()
-            if not payload:
-                return
-            if len(payload) > 2000:
-                payload = payload[:1997] + "..."
-
-            send_kwargs = {
-                "content": payload,
-                "username": character["name"][:80],
-                "allowed_mentions": discord.AllowedMentions.none(),
-                "wait": True,
-            }
-            avatar_url = character.get("avatar_url")
-            if avatar_url:
-                send_kwargs["avatar_url"] = avatar_url
-
-            await webhook.send(**send_kwargs)
-            # Delete only after the OC relay succeeded, so a failed relay never eats a message.
-            await message.delete()
+                try:
+                    await relay_message.edit(
+                        content=payload,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except (discord.NotFound, discord.HTTPException):
+                    pass
         except discord.Forbidden:
             print(
                 f"RP relay permission failure in channel {channel.id}; "
