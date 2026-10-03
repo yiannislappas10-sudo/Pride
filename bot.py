@@ -12,6 +12,8 @@ from database import (
     save_character,
     update_character,
     delete_character,
+    get_roleplay_settings,
+    save_roleplay_settings,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -669,6 +671,234 @@ class PublicCharacterPicker(discord.ui.LayoutView):
         )
 
 
+async def ensure_roleplay_channel(
+    interaction: discord.Interaction,
+) -> bool:
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "The roleplay system can only be used inside a server.",
+            ephemeral=True,
+        )
+        return False
+
+    settings = get_roleplay_settings(interaction.guild.id)
+
+    if not settings["enabled"]:
+        await interaction.response.send_message(
+            "The roleplay system is currently OFF in this server.\n"
+            "An administrator can configure it with /oc settings.",
+            ephemeral=True,
+        )
+        return False
+
+    channel_ids = settings["channel_ids"]
+
+    if not channel_ids:
+        await interaction.response.send_message(
+            "No roleplay channels have been configured yet.\n"
+            "An administrator can choose them with /oc settings.",
+            ephemeral=True,
+        )
+        return False
+
+    if interaction.channel_id not in channel_ids:
+        allowed = ", ".join(f"<#{channel_id}>" for channel_id in channel_ids)
+        await interaction.response.send_message(
+            "This is not a roleplay channel.\n"
+            f"Use one of the configured channels: {allowed}",
+            ephemeral=True,
+        )
+        return False
+
+    return True
+
+
+class RoleplaySettingsView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        guild_id: int,
+        *,
+        enabled: bool | None = None,
+        selected_channel_ids: list[int] | None = None,
+    ):
+        super().__init__(timeout=900)
+        self.guild_id = guild_id
+
+        saved = get_roleplay_settings(guild_id)
+        self.enabled = saved["enabled"] if enabled is None else enabled
+        self.selected_channel_ids = (
+            list(saved["channel_ids"])
+            if selected_channel_ids is None
+            else list(selected_channel_ids)
+        )
+
+        status = "ON" if self.enabled else "OFF"
+        saved_channels = saved["channel_ids"]
+        selected_text = (
+            ", ".join(f"<#{channel_id}>" for channel_id in self.selected_channel_ids)
+            if self.selected_channel_ids
+            else "None selected"
+        )
+
+        saved_text = (
+            ", ".join(f"<#{channel_id}>" for channel_id in saved_channels)
+            if saved_channels
+            else "None configured"
+        )
+
+        panel = (
+            "## ⟐ Roleplay Settings\n"
+            "*Server-wide controls for the RP system*\n\n"
+            f"**Status:** {status}\n"
+            f"**Saved RP channels:** {saved_text}\n"
+            f"**Pending selection:** {selected_text}\n\n"
+            "The RP system will only respond inside the channels you save here. "
+            "This setting will also be used by the future episode system."
+        )
+
+        self.add_item(discord.ui.TextDisplay(panel))
+        self.add_item(discord.ui.Separator())
+
+        channel_row = discord.ui.ActionRow()
+        self.channel_select = discord.ui.ChannelSelect(
+            placeholder="Select RP channels",
+            min_values=1,
+            max_values=25,
+            channel_types=[discord.ChannelType.text],
+        )
+        self.channel_select.callback = self.channel_select_callback
+        channel_row.add_item(self.channel_select)
+        self.add_item(channel_row)
+
+        actions = discord.ui.ActionRow()
+
+        toggle = discord.ui.Button(
+            label="Turn OFF" if self.enabled else "Turn ON",
+            style=(
+                discord.ButtonStyle.danger
+                if self.enabled
+                else discord.ButtonStyle.success
+            ),
+        )
+        save = discord.ui.Button(
+            label="Save Channels",
+            style=discord.ButtonStyle.primary,
+        )
+        clear = discord.ui.Button(
+            label="Clear Channels",
+            style=discord.ButtonStyle.secondary,
+        )
+        close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        toggle.callback = self.toggle_callback
+        save.callback = self.save_callback
+        clear.callback = self.clear_callback
+        close.callback = self.close_callback
+
+        actions.add_item(toggle)
+        actions.add_item(save)
+        actions.add_item(clear)
+        actions.add_item(close)
+        self.add_item(actions)
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message(
+                "This settings panel is no longer valid here.",
+                ephemeral=True,
+            )
+            return False
+
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "You need Manage Server to change roleplay settings.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    async def channel_select_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.selected_channel_ids = [channel.id for channel in self.channel_select.values]
+
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=self.enabled,
+                selected_channel_ids=self.selected_channel_ids,
+            )
+        )
+
+    async def toggle_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.enabled = not self.enabled
+        save_roleplay_settings(
+            self.guild_id,
+            self.enabled,
+            self.selected_channel_ids,
+        )
+
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=self.enabled,
+                selected_channel_ids=self.selected_channel_ids,
+            )
+        )
+
+    async def save_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        save_roleplay_settings(
+            self.guild_id,
+            self.enabled,
+            self.selected_channel_ids,
+        )
+
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=self.enabled,
+                selected_channel_ids=self.selected_channel_ids,
+            )
+        )
+
+    async def clear_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.selected_channel_ids = []
+        save_roleplay_settings(
+            self.guild_id,
+            self.enabled,
+            [],
+        )
+
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=self.enabled,
+                selected_channel_ids=[],
+            )
+        )
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+
 class RPBot(commands.Bot):
     async def setup_hook(self):
         init_db()
@@ -716,6 +946,9 @@ oc_group = app_commands.Group(
     description="Open your OC dashboard.",
 )
 async def oc_dashboard(interaction: discord.Interaction):
+    if not await ensure_roleplay_channel(interaction):
+        return
+
     await interaction.response.send_message(
         view=CharacterDashboard(interaction.user.id),
         ephemeral=True,
@@ -733,6 +966,9 @@ async def oc_view(
     interaction: discord.Interaction,
     member: discord.Member | None = None,
 ):
+    if not await ensure_roleplay_channel(interaction):
+        return
+
     target = member or interaction.user
     characters = get_characters(target.id)
 
@@ -751,6 +987,31 @@ async def oc_view(
 
     await interaction.response.send_message(
         view=PublicCharacterPicker(target, characters)
+    )
+
+
+@oc_group.command(
+    name="settings",
+    description="Configure where the roleplay system can be used.",
+)
+async def oc_settings(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "This command can only be used inside a server.",
+            ephemeral=True,
+        )
+        return
+
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "You need Manage Server to configure roleplay channels.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        view=RoleplaySettingsView(interaction.guild.id),
+        ephemeral=True,
     )
 
 
