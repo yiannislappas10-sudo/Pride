@@ -210,6 +210,10 @@ def init_db():
             row["name"]
             for row in db.execute("PRAGMA table_info(episodes)").fetchall()
         }
+        if "prep_started_at" not in episode_columns:
+            db.execute(
+                "ALTER TABLE episodes ADD COLUMN prep_started_at TEXT"
+            )
         for column_sql in (
             "details TEXT DEFAULT ''",
             "max_players INTEGER NOT NULL DEFAULT 2",
@@ -761,6 +765,11 @@ def update_episode(
                 max_players = ?,
                 lobby_channel_id = ?,
                 lobby_message_id = ?,
+                prep_started_at = CASE
+                    WHEN ? = 'preparing' AND prep_started_at IS NULL
+                    THEN CURRENT_TIMESTAMP
+                    ELSE prep_started_at
+                END,
                 started_at =
                     CASE
                         WHEN ? = 'active' AND started_at IS NULL
@@ -789,6 +798,7 @@ def update_episode(
                 values.get("max_players", 2),
                 values.get("lobby_channel_id"),
                 values.get("lobby_message_id"),
+                values["status"],
                 values["status"],
                 values["status"],
                 episode_id,
@@ -929,3 +939,22 @@ def remove_episode_cast(episode_id: int, user_id: int):
             (episode_id, user_id),
         )
         db.commit()
+
+
+def get_episode_preparation_remaining(episode_id: int, prep_seconds: int = 600):
+    episode = get_episode(episode_id)
+    if not episode or not episode.get("prep_started_at"):
+        return prep_seconds
+
+    from datetime import datetime, timezone
+
+    try:
+        started = datetime.strptime(
+            episode["prep_started_at"],
+            "%Y-%m-%d %H:%M:%S",
+        ).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return prep_seconds
+
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return max(0, int(prep_seconds - elapsed))
