@@ -2296,6 +2296,12 @@ class EpisodeCastView(discord.ui.LayoutView):
 
         member = interaction.guild.get_member(character["user_id"])
         if member is None:
+            try:
+                member = await interaction.guild.fetch_member(character["user_id"])
+            except (discord.NotFound, discord.HTTPException):
+                member = None
+
+        if member is None:
             await interaction.response.send_message(
                 "I could not resolve the player for that OC.",
                 ephemeral=True,
