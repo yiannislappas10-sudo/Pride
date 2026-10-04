@@ -35,6 +35,7 @@ from database import (
     save_episode_message,
     get_episode_message_count,
     get_episode_messages,
+    get_episode_preparation_remaining,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -1887,16 +1888,20 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             ephemeral=True,
         )
 
-        await channel.send(
-            content=(
-                f"## ⟐ EPISODE {self.episode_id} — PREPARATION\n"
-                f"**{episode['title']}**\n\n"
-                f"{trim(episode['premise'], 1200)}\n\n"
-                f"*Only the episode creator and selected cast can see this channel.*"
+        prep_message = await channel.send(
+            content=episode_prep_text(
+                episode,
+                cast,
+                get_episode_preparation_remaining(self.episode_id),
             ),
             view=EpisodePrepView(self.episode_id),
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        update_episode(
+            self.episode_id,
+            prep_message_id=prep_message.id,
+        )
+        interaction.client.schedule_episode_prep_timer(self.episode_id)
 
         await refresh_episode_lobby(interaction.client, self.episode_id)
 
@@ -1973,15 +1978,174 @@ class EpisodeLobbyView(discord.ui.LayoutView):
         )
 
 
+def episode_prep_text(episode: dict, cast: list[dict], remaining: int) -> str:
+    if remaining > 0:
+        minutes, seconds = divmod(remaining, 60)
+        timer = f"{minutes:02d}:{seconds:02d}"
+        prep_status = f"**Prep Time Remaining:** {timer}"
+    else:
+        prep_status = "**Prep Time:** COMPLETE — the creator can begin the RP."
+
+    cast_lines = []
+    for item in cast:
+        character = get_character(item["character_id"])
+        if character:
+            cast_lines.append(
+                f"<@{item['user_id']}> — **{character['name']}** "
+                f"• {display(character['pronouns'])}"
+            )
+        else:
+            cast_lines.append(f"<@{item['user_id']}> — **Deleted OC**")
+
+    cast_text = "\n".join(cast_lines) if cast_lines else "*No cast recorded.*"
+
+    return (
+        f"## ⟐ EPISODE {episode['episode_id']} — PREPARATION\n"
+        f"**{episode['title']}**\n\n"
+        f"{prep_status}\n\n"
+        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 1300)}\n\n"
+        f"**Location:** {episode.get('location') or 'Not set'}\n"
+        f"**Tone:** {episode.get('tone') or 'Not set'}\n\n"
+        f"### Selected Cast\n{cast_text}\n\n"
+        "*Everyone in this ticket may inspect the selected OCs before the episode begins.*"
+    )
+
+
+class EpisodeCastView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=300)
+        self.episode_id = episode_id
+
+        cast = get_episode_cast(episode_id)
+        options = []
+        for item in cast[:25]:
+            character = get_character(item["character_id"])
+            if character:
+                options.append(
+                    discord.SelectOption(
+                        label=trim(character["name"], 100),
+                        description=f"Played by {item['user_id']}"[:100],
+                        value=str(character["character_id"]),
+                    )
+                )
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                "## ⟐ Episode Cast\n"
+                "Select a character to inspect their full OC profile."
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        if options:
+            self.character_select = discord.ui.Select(
+                placeholder="Select an OC",
+                options=options,
+                min_values=1,
+                max_values=1,
+            )
+            self.character_select.callback = self.select_callback
+            row = discord.ui.ActionRow()
+            row.add_item(self.character_select)
+            self.add_item(row)
+        else:
+            self.character_select = None
+            self.add_item(
+                discord.ui.TextDisplay("*No usable OCs are recorded for this episode.*")
+            )
+
+        close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+        )
+        close.callback = self.close_callback
+        row = discord.ui.ActionRow()
+        row.add_item(close)
+        self.add_item(row)
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        cast = get_episode_cast(self.episode_id)
+        allowed_ids = {episode["creator_id"]} | {
+            item["user_id"] for item in cast
+        } if episode else set()
+
+        if not episode or interaction.user.id not in allowed_ids:
+            await interaction.response.send_message(
+                "You are not part of this episode.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        character_id = int(self.character_select.values[0])
+        character = get_character(character_id)
+        if not character:
+            await interaction.response.send_message(
+                "That OC no longer exists.",
+                ephemeral=True,
+            )
+            return
+
+        member = interaction.guild.get_member(character["user_id"])
+        if member is None:
+            await interaction.response.send_message(
+                "I could not resolve the player for that OC.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            view=CharacterProfile(character, member)
+        )
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.edit_message(
+                content="This episode no longer exists.",
+                view=None,
+            )
+            return
+
+        await interaction.response.edit_message(
+            content=episode_prep_text(
+                episode,
+                get_episode_cast(self.episode_id),
+                get_episode_preparation_remaining(self.episode_id),
+            ),
+            view=EpisodePrepView(self.episode_id),
+        )
+
+
 class EpisodePrepView(discord.ui.LayoutView):
     def __init__(self, episode_id: int):
         super().__init__(timeout=None)
         self.episode_id = episode_id
 
+        episode = get_episode(episode_id)
+        remaining = (
+            get_episode_preparation_remaining(episode_id)
+            if episode and episode["status"] == "preparing"
+            else 0
+        )
+
         begin = discord.ui.Button(
             label="Begin RP",
             custom_id=f"episode:{self.episode_id}:begin",
             style=discord.ButtonStyle.success,
+            disabled=(
+                not episode
+                or episode["status"] != "preparing"
+                or remaining > 0
+            ),
         )
         end = discord.ui.Button(
             label="End Episode",
@@ -1989,7 +2153,7 @@ class EpisodePrepView(discord.ui.LayoutView):
             style=discord.ButtonStyle.danger,
         )
         cast = discord.ui.Button(
-            label="View Cast",
+            label="View All OCs",
             custom_id=f"episode:{self.episode_id}:cast",
             style=discord.ButtonStyle.secondary,
         )
@@ -2027,6 +2191,15 @@ class EpisodePrepView(discord.ui.LayoutView):
         if episode["status"] != "preparing":
             await interaction.response.send_message(
                 "This episode is not in preparation.",
+                ephemeral=True,
+            )
+            return
+
+        remaining = get_episode_preparation_remaining(self.episode_id)
+        if remaining > 0:
+            minutes, seconds = divmod(remaining, 60)
+            await interaction.response.send_message(
+                f"Preparation is still locked for {minutes:02d}:{seconds:02d}.",
                 ephemeral=True,
             )
             return
@@ -2078,29 +2251,70 @@ class EpisodePrepView(discord.ui.LayoutView):
         )
 
     async def cast_callback(self, interaction: discord.Interaction):
-        cast = get_episode_cast(self.episode_id)
-        if not cast:
+        episode = get_episode(self.episode_id)
+        cast = get_episode_cast(self.episode_id) if episode else []
+        allowed_ids = {episode["creator_id"]} | {
+            item["user_id"] for item in cast
+        } if episode else set()
+
+        if not episode or interaction.user.id not in allowed_ids:
             await interaction.response.send_message(
-                "No cast members were recorded.",
+                "You are not part of this episode.",
                 ephemeral=True,
             )
             return
 
-        lines = []
-        for item in cast:
-            character = get_character(item["character_id"])
-            name = character["name"] if character else "Deleted OC"
-            lines.append(f"<@{item['user_id']}> — **{name}**")
-
         await interaction.response.send_message(
-            "## ⟐ Episode Cast\n" + "\n".join(lines),
+            view=EpisodeCastView(self.episode_id),
             ephemeral=True,
         )
+
 
 class RPBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rp_webhook_cache: dict[int, discord.Webhook] = {}
+        self.episode_prep_tasks: dict[int, asyncio.Task] = {}
+
+    def schedule_episode_prep_timer(self, episode_id: int):
+        task = self.episode_prep_tasks.get(episode_id)
+        if task and not task.done():
+            return
+        self.episode_prep_tasks[episode_id] = asyncio.create_task(
+            self._episode_prep_timer(episode_id)
+        )
+
+    async def _episode_prep_timer(self, episode_id: int):
+        while True:
+            episode = get_episode(episode_id)
+            if not episode or episode["status"] != "preparing":
+                return
+
+            remaining = get_episode_preparation_remaining(episode_id)
+            channel_id = episode.get("prep_channel_id")
+            message_id = episode.get("prep_message_id")
+
+            if channel_id and message_id:
+                channel = self.get_channel(channel_id)
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        message = await channel.fetch_message(message_id)
+                        await message.edit(
+                            content=episode_prep_text(
+                                episode,
+                                get_episode_cast(episode_id),
+                                remaining,
+                            ),
+                            view=EpisodePrepView(episode_id),
+                        )
+                    except (discord.NotFound, discord.HTTPException):
+                        pass
+
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(30, max(1, remaining)))
+
+
 
     async def on_message(self, message: discord.Message):
         # Only relay ordinary human messages in explicitly configured RP channels.
@@ -2280,6 +2494,8 @@ class RPBot(commands.Bot):
                 self.add_view(EpisodeLobbyView(episode["episode_id"]))
             if episode["status"] in {"preparing", "active"} and episode.get("prep_channel_id"):
                 self.add_view(EpisodePrepView(episode["episode_id"]))
+            if episode["status"] == "preparing":
+                self.schedule_episode_prep_timer(episode["episode_id"])
 
         guild = discord.Object(id=DEV_GUILD_ID)
 
