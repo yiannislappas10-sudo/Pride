@@ -2093,7 +2093,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         await interaction.followup.send(
             f"Preparation opened: {channel.mention}",
-            ephemeral=True,
+            ephemeral=False,
         )
 
         prep_message = await channel.send(
