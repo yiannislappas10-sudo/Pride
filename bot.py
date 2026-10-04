@@ -2060,7 +2060,15 @@ class EpisodeLobbyView(discord.ui.LayoutView):
         allowed_user_ids = {episode["creator_id"]}
         allowed_user_ids.update(item["user_id"] for item in cast)
         for user_id in allowed_user_ids:
+            # get_member() can miss users who are not currently in cache.
+            # Fetch them so every joined cast member receives the overwrite.
             member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except (discord.NotFound, discord.HTTPException):
+                    member = None
+
             if member:
                 overwrites[member] = discord.PermissionOverwrite(
                     view_channel=True,
