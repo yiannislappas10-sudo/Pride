@@ -2446,11 +2446,36 @@ class EpisodePrepView(discord.ui.LayoutView):
             return
 
         update_episode(self.episode_id, status="completed")
+
+        archive_result = None
+        settings = get_roleplay_settings(interaction.guild.id)
+        if settings.get("archive_enabled") and settings.get("archive_channel_id"):
+            archive_channel = interaction.guild.get_channel(
+                settings["archive_channel_id"]
+            )
+            if isinstance(archive_channel, discord.TextChannel):
+                try:
+                    await publish_episode_archive(archive_channel, episode)
+                    archive_result = f"\n\nArchived in {archive_channel.mention}."
+                except discord.HTTPException as exc:
+                    print(
+                        f"Episode archive failed for #{self.episode_id}: {exc}"
+                    )
+                    archive_result = (
+                        "\n\nThe archive could not be published. "
+                        "Check the archive channel permissions."
+                    )
+            else:
+                archive_result = (
+                    "\n\nThe configured archive channel could not be found."
+                )
+
         await interaction.response.edit_message(
             view=EpisodeNoticeView(
                 f"## ⟐ EPISODE {self.episode_id} — CONCLUDED\n"
                 f"**{episode['title']}**\n\n"
                 "The episode transcript has been preserved."
+                f"{archive_result or ''}"
             ),
         )
 
