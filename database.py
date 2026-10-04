@@ -195,6 +195,17 @@ def init_db():
             )
         """)
 
+        episode_cast_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(episode_cast)"
+            ).fetchall()
+        }
+        if "auto_rp_format" not in episode_cast_columns:
+            db.execute(
+                "ALTER TABLE episode_cast ADD COLUMN auto_rp_format INTEGER NOT NULL DEFAULT 0"
+            )
+
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_episode_cast_episode
             ON episode_cast(episode_id, joined_at ASC)
