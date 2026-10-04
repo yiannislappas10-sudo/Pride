@@ -211,11 +211,6 @@ def init_db():
                     f"ALTER TABLE episode_cast ADD COLUMN {column_sql}"
                 )
 
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_episode_messages_episode
-            ON episode_messages(episode_id, message_id ASC)
-        """)
-
         episode_columns = {
             row["name"]
             for row in db.execute("PRAGMA table_info(episodes)").fetchall()
@@ -280,6 +275,22 @@ def init_db():
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_episode_messages_episode
             ON episode_messages(episode_id, message_id ASC)
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS episode_narrator_requests (
+                episode_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (episode_id, user_id),
+                FOREIGN KEY (episode_id) REFERENCES episodes(episode_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episode_narrator_requests_episode
+            ON episode_narrator_requests(episode_id, requested_at ASC)
         """)
 
         db.commit()
@@ -942,6 +953,59 @@ def add_episode_cast(
                 character_id = excluded.character_id
             """,
             (episode_id, guild_id, user_id, character_id),
+        )
+        db.commit()
+
+
+def add_episode_narrator_request(
+    episode_id: int,
+    guild_id: int,
+    user_id: int,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO episode_narrator_requests (
+                episode_id, guild_id, user_id
+            )
+            VALUES (?, ?, ?)
+            """,
+            (episode_id, guild_id, user_id),
+        )
+        db.commit()
+
+
+def get_episode_narrator_requests(episode_id: int):
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM episode_narrator_requests
+            WHERE episode_id = ?
+            ORDER BY requested_at ASC
+            """,
+            (episode_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_episode_narrator_request(episode_id: int, user_id: int):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            DELETE FROM episode_narrator_requests
+            WHERE episode_id = ? AND user_id = ?
+            """,
+            (episode_id, user_id),
+        )
+        db.commit()
+
+
+def clear_episode_narrator_requests(episode_id: int):
+    with closing(connect()) as db:
+        db.execute(
+            "DELETE FROM episode_narrator_requests WHERE episode_id = ?",
+            (episode_id,),
         )
         db.commit()
 
