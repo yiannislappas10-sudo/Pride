@@ -206,6 +206,22 @@ def init_db():
             ON episode_messages(episode_id, message_id ASC)
         """)
 
+        episode_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(episodes)").fetchall()
+        }
+        for column_sql in (
+            "details TEXT DEFAULT ''",
+            "max_players INTEGER NOT NULL DEFAULT 2",
+            "prep_channel_id INTEGER",
+        ):
+            column_name = column_sql.split()[0]
+            if column_name not in episode_columns:
+                db.execute(
+                    f"ALTER TABLE episodes ADD COLUMN {column_sql}"
+                )
+
+
         db.commit()
 
 
@@ -596,12 +612,19 @@ def create_episode(
     location: str = "",
     tone: str = "",
     ending: str = "",
+    details: str = "",
+    max_players: int = 2,
 ):
     title = (title or "").strip()[:100]
-    premise = (premise or "").strip()[:1000]
-    location = (location or "").strip()[:200]
-    tone = (tone or "").strip()[:200]
-    ending = (ending or "").strip()[:500]
+    premise = (premise or "").strip()[:2000]
+    location = (location or "").strip()[:300]
+    tone = (tone or "").strip()[:300]
+    ending = (ending or "").strip()[:1000]
+    details = (details or "").strip()[:3000]
+    try:
+        max_players = max(1, min(int(max_players), 25))
+    except (TypeError, ValueError):
+        max_players = 2
 
     if not title:
         return None
@@ -610,11 +633,15 @@ def create_episode(
         cursor = db.execute(
             """
             INSERT INTO episodes (
-                guild_id, creator_id, title, premise, location, tone, ending
+                guild_id, creator_id, title, premise, location,
+                tone, ending, details, max_players
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (guild_id, creator_id, title, premise, location, tone, ending),
+            (
+                guild_id, creator_id, title, premise, location,
+                tone, ending, details, max_players,
+            ),
         )
         db.commit()
         episode_id = int(cursor.lastrowid)
@@ -642,8 +669,10 @@ def get_episodes(guild_id: int, limit: int = 25):
             ORDER BY
                 CASE status
                     WHEN 'active' THEN 0
-                    WHEN 'planning' THEN 1
-                    ELSE 2
+                    WHEN 'preparing' THEN 1
+                    WHEN 'planning' THEN 2
+                    WHEN 'completed' THEN 3
+                    ELSE 4
                 END,
                 episode_id DESC
             LIMIT {safe_limit}
@@ -658,8 +687,16 @@ def update_episode(
     *,
     status: str | None = None,
     channel_id: int | None = None,
+    prep_channel_id: int | None = None,
+    title: str | None = None,
+    premise: str | None = None,
+    location: str | None = None,
+    tone: str | None = None,
+    ending: str | None = None,
+    details: str | None = None,
+    max_players: int | None = None,
 ):
-    allowed_statuses = {"planning", "active", "completed"}
+    allowed_statuses = {"planning", "preparing", "active", "completed"}
 
     with closing(connect()) as db:
         current = db.execute(
@@ -674,6 +711,23 @@ def update_episode(
             values["status"] = status
         if channel_id is not None:
             values["channel_id"] = int(channel_id)
+        if prep_channel_id is not None:
+            values["prep_channel_id"] = int(prep_channel_id)
+        for key, value, limit in (
+            ("title", title, 100),
+            ("premise", premise, 2000),
+            ("location", location, 300),
+            ("tone", tone, 300),
+            ("ending", ending, 1000),
+            ("details", details, 3000),
+        ):
+            if value is not None:
+                values[key] = str(value).strip()[:limit]
+        if max_players is not None:
+            try:
+                values["max_players"] = max(1, min(int(max_players), 25))
+            except (TypeError, ValueError):
+                pass
 
         db.execute(
             """
@@ -681,6 +735,14 @@ def update_episode(
             SET
                 status = ?,
                 channel_id = ?,
+                prep_channel_id = ?,
+                title = ?,
+                premise = ?,
+                location = ?,
+                tone = ?,
+                ending = ?,
+                details = ?,
+                max_players = ?,
                 started_at =
                     CASE
                         WHEN ? = 'active' AND started_at IS NULL
@@ -699,6 +761,14 @@ def update_episode(
             (
                 values["status"],
                 values["channel_id"],
+                values.get("prep_channel_id"),
+                values["title"],
+                values["premise"],
+                values["location"],
+                values["tone"],
+                values["ending"],
+                values.get("details", ""),
+                values.get("max_players", 2),
                 values["status"],
                 values["status"],
                 episode_id,
