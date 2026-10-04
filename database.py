@@ -222,6 +222,16 @@ def init_db():
                 )
 
 
+        for column_sql in (
+            "lobby_channel_id INTEGER",
+            "lobby_message_id INTEGER",
+        ):
+            column_name = column_sql.split()[0]
+            if column_name not in episode_columns:
+                db.execute(
+                    f"ALTER TABLE episodes ADD COLUMN {column_sql}"
+                )
+
         db.commit()
 
 
@@ -695,6 +705,8 @@ def update_episode(
     ending: str | None = None,
     details: str | None = None,
     max_players: int | None = None,
+    lobby_channel_id: int | None = None,
+    lobby_message_id: int | None = None,
 ):
     allowed_statuses = {"planning", "preparing", "active", "completed"}
 
@@ -728,6 +740,10 @@ def update_episode(
                 values["max_players"] = max(1, min(int(max_players), 25))
             except (TypeError, ValueError):
                 pass
+        if lobby_channel_id is not None:
+            values["lobby_channel_id"] = int(lobby_channel_id)
+        if lobby_message_id is not None:
+            values["lobby_message_id"] = int(lobby_message_id)
 
         db.execute(
             """
@@ -743,6 +759,8 @@ def update_episode(
                 ending = ?,
                 details = ?,
                 max_players = ?,
+                lobby_channel_id = ?,
+                lobby_message_id = ?,
                 started_at =
                     CASE
                         WHEN ? = 'active' AND started_at IS NULL
@@ -769,6 +787,8 @@ def update_episode(
                 values["ending"],
                 values.get("details", ""),
                 values.get("max_players", 2),
+                values.get("lobby_channel_id"),
+                values.get("lobby_message_id"),
                 values["status"],
                 values["status"],
                 episode_id,
@@ -900,3 +920,12 @@ def get_episode_messages(episode_id: int):
             (episode_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def remove_episode_cast(episode_id: int, user_id: int):
+    with closing(connect()) as db:
+        db.execute(
+            "DELETE FROM episode_cast WHERE episode_id = ? AND user_id = ?",
+            (episode_id, user_id),
+        )
+        db.commit()
