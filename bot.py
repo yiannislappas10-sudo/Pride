@@ -1389,16 +1389,17 @@ def episode_lobby_text(episode: dict, cast: list[dict]) -> str:
 
     cast_text = "\n".join(member_lines) if member_lines else "*No participants yet.*"
     details = episode.get("details") or "No extra details provided."
-    return (
+    text = (
         f"## ⟐ EPISODE {episode['episode_id']} — {episode['title']}\n"
         f"*{status}*\n\n"
         f"**Players:** {len(cast)}/{episode.get('max_players', 2)}\n"
         f"**Location:** {episode.get('location') or 'Not set'}\n"
         f"**Tone:** {episode.get('tone') or 'Not set'}\n\n"
-        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 1300)}\n\n"
-        f"**Additional Details**\n{trim(details, 1600)}\n\n"
+        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 750)}\n\n"
+        f"**Additional Details**\n{trim(details, 900)}\n\n"
         f"**Cast**\n{cast_text}"
     )
+    return text[:1900]
 
 
 async def refresh_episode_lobby(bot: "RPBot", episode_id: int):
@@ -1999,16 +2000,17 @@ def episode_prep_text(episode: dict, cast: list[dict], remaining: int) -> str:
 
     cast_text = "\n".join(cast_lines) if cast_lines else "*No cast recorded.*"
 
-    return (
+    text = (
         f"## ⟐ EPISODE {episode['episode_id']} — PREPARATION\n"
         f"**{episode['title']}**\n\n"
         f"{prep_status}\n\n"
-        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 1300)}\n\n"
+        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 850)}\n\n"
         f"**Location:** {episode.get('location') or 'Not set'}\n"
         f"**Tone:** {episode.get('tone') or 'Not set'}\n\n"
         f"### Selected Cast\n{cast_text}\n\n"
         "*Everyone in this ticket may inspect the selected OCs before the episode begins.*"
     )
+    return text[:1900]
 
 
 class EpisodeCastView(discord.ui.LayoutView):
