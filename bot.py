@@ -1529,6 +1529,18 @@ class EpisodeDetailsModal(discord.ui.Modal, title="Episode Details — Part II")
             )
             return
 
+        if self.base.get("ping_role"):
+            ping_role = interaction.guild.get_role(1555716046919573505)
+            if ping_role is not None:
+                await interaction.channel.send(
+                    f"{ping_role.mention} A new episode is recruiting: **{episode['title']}**",
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=[ping_role],
+                        users=False,
+                        everyone=False,
+                    ),
+                )
+
         lobby_message = await interaction.channel.send(
             view=EpisodeLobbyView(episode["episode_id"]),
             allowed_mentions=discord.AllowedMentions.none(),
@@ -1616,6 +1628,7 @@ class EpisodeCreateModal(discord.ui.Modal, title="Create Episode — Part I"):
             "max_players": max_players,
         }
 
+        base["ping_role"] = False
         await interaction.response.send_message(
             view=EpisodeDetailsPromptView(base),
             ephemeral=True,
@@ -1626,17 +1639,27 @@ class EpisodeDetailsPromptView(discord.ui.LayoutView):
     def __init__(self, base: dict):
         super().__init__(timeout=600)
         self.base = base
+        self.render()
 
+    def render(self):
+        self.clear_items()
+        choice = "ON" if self.base.get("ping_role") else "OFF"
         self.add_item(
             discord.ui.TextDisplay(
                 "## ⟐ Episode Setup — Part II\n"
-                "Continue to the detailed episode sheet. "
+                "Choose whether to notify the episode role before continuing.\n\n"
+                f"**Role ping:** {choice}\n"
+                "Role: <@1555716046919573505>\n\n"
                 "Nothing has been created yet."
             )
         )
         self.add_item(discord.ui.Separator())
 
         actions = discord.ui.ActionRow()
+        ping_button = discord.ui.Button(
+            label="Ping Role: ON" if self.base.get("ping_role") else "Ping Role: OFF",
+            style=discord.ButtonStyle.success if self.base.get("ping_role") else discord.ButtonStyle.secondary,
+        )
         continue_button = discord.ui.Button(
             label="Continue to Details",
             style=discord.ButtonStyle.primary,
@@ -1645,6 +1668,11 @@ class EpisodeDetailsPromptView(discord.ui.LayoutView):
             label="Cancel",
             style=discord.ButtonStyle.secondary,
         )
+
+        async def toggle_callback(interaction: discord.Interaction):
+            self.base["ping_role"] = not self.base.get("ping_role", False)
+            self.render()
+            await interaction.response.edit_message(view=self)
 
         async def continue_callback(interaction: discord.Interaction):
             await interaction.response.send_modal(
@@ -1656,9 +1684,11 @@ class EpisodeDetailsPromptView(discord.ui.LayoutView):
                 view=EpisodeNoticeView("Episode creation cancelled."),
             )
 
+        ping_button.callback = toggle_callback
         continue_button.callback = continue_callback
         cancel_button.callback = cancel_callback
 
+        actions.add_item(ping_button)
         actions.add_item(continue_button)
         actions.add_item(cancel_button)
         self.add_item(actions)
