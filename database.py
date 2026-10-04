@@ -144,6 +144,68 @@ def init_db():
             ON rp_learning_examples(guild_id, user_id, character_id, example_id DESC)
         """)
 
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS episodes (
+                episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                creator_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                premise TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                tone TEXT DEFAULT '',
+                ending TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'planning',
+                channel_id INTEGER,
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episodes_guild_status
+            ON episodes(guild_id, status, episode_id DESC)
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS episode_cast (
+                episode_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (episode_id, user_id),
+                FOREIGN KEY (episode_id) REFERENCES episodes(episode_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episode_cast_episode
+            ON episode_cast(episode_id, joined_at ASC)
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS episode_messages (
+                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                character_name TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                discord_message_id INTEGER,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (episode_id) REFERENCES episodes(episode_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episode_messages_episode
+            ON episode_messages(episode_id, message_id ASC)
+        """)
+
         db.commit()
 
 
@@ -524,3 +586,247 @@ def delete_character(character_id: int):
             (character_id,),
         )
         db.commit()
+
+
+def create_episode(
+    guild_id: int,
+    creator_id: int,
+    title: str,
+    premise: str = "",
+    location: str = "",
+    tone: str = "",
+    ending: str = "",
+):
+    title = (title or "").strip()[:100]
+    premise = (premise or "").strip()[:1000]
+    location = (location or "").strip()[:200]
+    tone = (tone or "").strip()[:200]
+    ending = (ending or "").strip()[:500]
+
+    if not title:
+        return None
+
+    with closing(connect()) as db:
+        cursor = db.execute(
+            """
+            INSERT INTO episodes (
+                guild_id, creator_id, title, premise, location, tone, ending
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (guild_id, creator_id, title, premise, location, tone, ending),
+        )
+        db.commit()
+        episode_id = int(cursor.lastrowid)
+
+    return get_episode(episode_id)
+
+
+def get_episode(episode_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_episodes(guild_id: int, limit: int = 25):
+    safe_limit = max(1, min(int(limit), 25))
+    with closing(connect()) as db:
+        rows = db.execute(
+            f"""
+            SELECT *
+            FROM episodes
+            WHERE guild_id = ?
+            ORDER BY
+                CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'planning' THEN 1
+                    ELSE 2
+                END,
+                episode_id DESC
+            LIMIT {safe_limit}
+            """,
+            (guild_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_episode(
+    episode_id: int,
+    *,
+    status: str | None = None,
+    channel_id: int | None = None,
+):
+    allowed_statuses = {"planning", "active", "completed"}
+
+    with closing(connect()) as db:
+        current = db.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if not current:
+            return None
+
+        values = dict(current)
+        if status in allowed_statuses:
+            values["status"] = status
+        if channel_id is not None:
+            values["channel_id"] = int(channel_id)
+
+        db.execute(
+            """
+            UPDATE episodes
+            SET
+                status = ?,
+                channel_id = ?,
+                started_at =
+                    CASE
+                        WHEN ? = 'active' AND started_at IS NULL
+                        THEN CURRENT_TIMESTAMP
+                        ELSE started_at
+                    END,
+                ended_at =
+                    CASE
+                        WHEN ? = 'completed'
+                        THEN CURRENT_TIMESTAMP
+                        ELSE ended_at
+                    END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE episode_id = ?
+            """,
+            (
+                values["status"],
+                values["channel_id"],
+                values["status"],
+                values["status"],
+                episode_id,
+            ),
+        )
+        db.commit()
+
+    return get_episode(episode_id)
+
+
+def delete_episode(episode_id: int):
+    with closing(connect()) as db:
+        db.execute("DELETE FROM episode_messages WHERE episode_id = ?", (episode_id,))
+        db.execute("DELETE FROM episode_cast WHERE episode_id = ?", (episode_id,))
+        db.execute("DELETE FROM episodes WHERE episode_id = ?", (episode_id,))
+        db.commit()
+
+
+def get_episode_cast(episode_id: int):
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM episode_cast
+            WHERE episode_id = ?
+            ORDER BY joined_at ASC
+            """,
+            (episode_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_episode_cast(
+    episode_id: int,
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO episode_cast (
+                episode_id, guild_id, user_id, character_id
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(episode_id, user_id) DO UPDATE SET
+                character_id = excluded.character_id
+            """,
+            (episode_id, guild_id, user_id, character_id),
+        )
+        db.commit()
+
+
+def get_active_episode(guild_id: int, channel_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT *
+            FROM episodes
+            WHERE guild_id = ? AND channel_id = ? AND status = 'active'
+            ORDER BY episode_id DESC
+            LIMIT 1
+            """,
+            (guild_id, channel_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def save_episode_message(
+    episode_id: int,
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+    character_name: str,
+    channel_id: int,
+    discord_message_id: int | None,
+    content: str,
+):
+    content = (content or "").strip()[:2000]
+    character_name = (character_name or "Character").strip()[:100]
+    if not content:
+        return
+
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO episode_messages (
+                episode_id, guild_id, user_id, character_id,
+                character_name, channel_id, discord_message_id, content
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                episode_id,
+                guild_id,
+                user_id,
+                character_id,
+                character_name,
+                channel_id,
+                discord_message_id,
+                content,
+            ),
+        )
+        db.commit()
+
+
+def get_episode_message_count(episode_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT COUNT(*) AS message_count
+            FROM episode_messages
+            WHERE episode_id = ?
+            """,
+            (episode_id,),
+        ).fetchone()
+    return int(row["message_count"]) if row else 0
+
+
+def get_episode_messages(episode_id: int):
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM episode_messages
+            WHERE episode_id = ?
+            ORDER BY message_id ASC
+            """,
+            (episode_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
