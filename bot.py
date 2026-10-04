@@ -1852,6 +1852,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
                 read_message_history=True,
                 manage_channels=True,
                 manage_messages=True,
+                manage_webhooks=True,
             ),
         }
 
