@@ -472,8 +472,6 @@ def save_roleplay_settings(
     guild_id: int,
     enabled: bool,
     channel_ids: list[int],
-    archive_channel_id: int | None = None,
-    archive_enabled: bool = False,
 ):
     unique_channels = list(dict.fromkeys(int(channel_id) for channel_id in channel_ids))
 
@@ -481,21 +479,45 @@ def save_roleplay_settings(
         db.execute(
             """
             INSERT INTO server_config (
-                guild_id, rp_enabled, rp_channel_ids,
-                archive_channel_id, archive_enabled, updated_at
+                guild_id, rp_enabled, rp_channel_ids, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(guild_id) DO UPDATE SET
                 rp_enabled = excluded.rp_enabled,
                 rp_channel_ids = excluded.rp_channel_ids,
-                archive_channel_id = excluded.archive_channel_id,
-                archive_enabled = excluded.archive_enabled,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
                 guild_id,
                 1 if enabled else 0,
                 json.dumps(unique_channels),
+            ),
+        )
+        db.commit()
+
+
+def save_archive_settings(
+    guild_id: int,
+    archive_channel_id: int | None,
+    archive_enabled: bool,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            INSERT INTO server_config (
+                guild_id, rp_enabled, rp_channel_ids,
+                archive_channel_id, archive_enabled, updated_at
+            )
+            VALUES (
+                ?, 0, '[]', ?, ?, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT(guild_id) DO UPDATE SET
+                archive_channel_id = excluded.archive_channel_id,
+                archive_enabled = excluded.archive_enabled,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                guild_id,
                 archive_channel_id,
                 1 if archive_enabled else 0,
             ),
