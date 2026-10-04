@@ -298,24 +298,65 @@ class DetailsModal(discord.ui.Modal, title="OC Details"):
 
 
 class AvatarModal(discord.ui.Modal, title="Set OC Avatar"):
-    avatar = discord.ui.TextInput(
-        label="Image URL",
-        placeholder="https://...",
-        max_length=500,
-        required=True,
-    )
-
     def __init__(self, user_id: int, character_id: int):
         super().__init__(timeout=300)
         self.user_id = user_id
         self.character_id = character_id
 
-    async def on_submit(self, interaction: discord.Interaction):
-        url = self.avatar.value.strip()
+        self.file_upload = discord.ui.FileUpload(
+            custom_id="oc_avatar_upload",
+            min_values=0,
+            max_values=1,
+            required=False,
+        )
+        self.avatar = discord.ui.TextInput(
+            label="Image URL (optional)",
+            placeholder="Or paste an image URL",
+            max_length=500,
+            required=False,
+        )
 
-        if not re.match(r"^https?://\S+$", url):
+        self.add_item(
+            discord.ui.Label(
+                text="Profile Picture",
+                description="Upload an image directly from your device.",
+                component=self.file_upload,
+            )
+        )
+        self.add_item(self.avatar)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        url = ""
+
+        if self.file_upload.values:
+            attachment = self.file_upload.values[0]
+            content_type = (attachment.content_type or "").lower()
+            filename = (attachment.filename or "").lower()
+
+            if not (
+                content_type.startswith("image/")
+                or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+            ):
+                await interaction.response.send_message(
+                    "Please upload an image file (PNG, JPG, GIF, or WEBP).",
+                    ephemeral=True,
+                )
+                return
+
+            url = attachment.url
+
+        elif self.avatar.value.strip():
+            url = self.avatar.value.strip()
+
+            if not re.match(r"^https?://\S+$", url):
+                await interaction.response.send_message(
+                    "That doesn't look like a valid image URL.",
+                    ephemeral=True,
+                )
+                return
+        else:
             await interaction.response.send_message(
-                "That doesn't look like a valid image URL.",
+                "Upload an image or enter an image URL first.",
                 ephemeral=True,
             )
             return
