@@ -1607,17 +1607,64 @@ class EpisodeCreateModal(discord.ui.Modal, title="Create Episode — Part I"):
             )
             return
 
-        await interaction.response.send_modal(
-            EpisodeDetailsModal(
-                {
-                    "title": clean(self.title_input.value, 100),
-                    "premise": clean(self.premise_input.value, 2000),
-                    "location": clean(self.location_input.value, 300),
-                    "tone": clean(self.tone_input.value, 300),
-                    "max_players": max_players,
-                }
+        base = {
+            "title": clean(self.title_input.value, 100),
+            "premise": clean(self.premise_input.value, 2000),
+            "location": clean(self.location_input.value, 300),
+            "tone": clean(self.tone_input.value, 300),
+            "max_players": max_players,
+        }
+
+        await interaction.response.send_message(
+            "## ⟐ Episode Setup — Part II\n"
+            "The first page is saved. Press **Continue to Details** to "
+            "open the second page and finish the episode setup.",
+            view=EpisodeDetailsPromptView(base),
+            ephemeral=True,
+        )
+
+
+class EpisodeDetailsPromptView(discord.ui.LayoutView):
+    def __init__(self, base: dict):
+        super().__init__(timeout=600)
+        self.base = base
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                "## ⟐ Episode Setup — Part II\n"
+                "Continue to the detailed episode sheet. "
+                "Nothing has been created yet."
             )
         )
+        self.add_item(discord.ui.Separator())
+
+        actions = discord.ui.ActionRow()
+        continue_button = discord.ui.Button(
+            label="Continue to Details",
+            style=discord.ButtonStyle.primary,
+        )
+        cancel_button = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        async def continue_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(
+                EpisodeDetailsModal(self.base)
+            )
+
+        async def cancel_callback(interaction: discord.Interaction):
+            await interaction.response.edit_message(
+                content="Episode creation cancelled.",
+                view=None,
+            )
+
+        continue_button.callback = continue_callback
+        cancel_button.callback = cancel_callback
+
+        actions.add_item(continue_button)
+        actions.add_item(cancel_button)
+        self.add_item(actions)
 
 
 class EpisodeJoinView(discord.ui.LayoutView):
