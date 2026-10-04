@@ -993,7 +993,6 @@ class RoleplaySettingsView(discord.ui.LayoutView):
                 if self.archive_enabled
                 else discord.ButtonStyle.secondary
             ),
-            disabled=self.archive_channel_id is None,
         )
         archive_save = discord.ui.Button(
             label="Save Archive",
@@ -1092,14 +1091,19 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         if not await self.allowed(interaction):
             return
 
-        if self.archive_channel_id is None:
+        next_enabled = not self.archive_enabled
+
+        # Publishing can only be turned ON when a destination archive exists.
+        # Keep the button clickable so the panel explains the missing setting
+        # instead of appearing broken/disabled.
+        if next_enabled and self.archive_channel_id is None:
             await interaction.response.send_message(
-                "Select an archive channel first.",
+                "Select an archive channel first, then turn Publish Episodes ON.",
                 ephemeral=True,
             )
             return
 
-        self.archive_enabled = not self.archive_enabled
+        self.archive_enabled = next_enabled
         save_archive_settings(
             self.guild_id,
             self.archive_channel_id,
