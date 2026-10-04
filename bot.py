@@ -38,6 +38,10 @@ from database import (
     get_episode_preparation_remaining,
     lock_episode_player_settings,
     set_episode_narrator,
+    add_episode_narrator_request,
+    get_episode_narrator_requests,
+    delete_episode_narrator_request,
+    clear_episode_narrator_requests,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -2013,12 +2017,26 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         narrator = discord.ui.Button(
             label="Set Narrator",
+            style=discord.ButtonStyle.primary,
+            disabled=not episode or episode["status"] != "planning",
+        )
+        request = discord.ui.Button(
+            label="Request Narrator",
+            style=discord.ButtonStyle.secondary,
+            disabled=not episode or episode["status"] != "planning",
+        )
+        manage = discord.ui.Button(
+            label="Manage Requests",
             style=discord.ButtonStyle.secondary,
             disabled=not episode or episode["status"] != "planning",
         )
         narrator.callback = self.narrator_callback
+        request.callback = self.request_narrator_callback
+        manage.callback = self.manage_narrator_requests_callback
         narrator_row = discord.ui.ActionRow()
         narrator_row.add_item(narrator)
+        narrator_row.add_item(request)
+        narrator_row.add_item(manage)
         self.add_item(narrator_row)
 
     async def narrator_callback(self, interaction: discord.Interaction):
@@ -2037,6 +2055,69 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             return
         await interaction.response.send_message(
             view=EpisodeNarratorView(self.episode_id),
+            ephemeral=True,
+        )
+
+    async def request_narrator_callback(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode["status"] != "planning":
+            await interaction.response.send_message(
+                "Narrator requests are closed once recruitment ends.",
+                ephemeral=True,
+            )
+            return
+        if interaction.user.id == episode["creator_id"]:
+            await interaction.response.send_message(
+                "You're the episode creator. Use **Set Narrator** to choose yourself.",
+                ephemeral=True,
+            )
+            return
+        if episode.get("narrator_id"):
+            await interaction.response.send_message(
+                "A narrator has already been selected.",
+                ephemeral=True,
+            )
+            return
+        cast_ids = {item["user_id"] for item in get_episode_cast(self.episode_id)}
+        if interaction.user.id in cast_ids:
+            await interaction.response.send_message(
+                "You are already playing an OC in this episode. A narrator cannot also be a player.",
+                ephemeral=True,
+            )
+            return
+        pending = get_episode_narrator_requests(self.episode_id)
+        if any(item["user_id"] == interaction.user.id for item in pending):
+            await interaction.response.send_message(
+                "Your narrator request is already pending.",
+                ephemeral=True,
+            )
+            return
+        add_episode_narrator_request(
+            self.episode_id,
+            interaction.guild.id,
+            interaction.user.id,
+        )
+        await interaction.response.send_message(
+            "Your narrator request has been sent to the episode creator.",
+            ephemeral=True,
+        )
+
+    async def manage_narrator_requests_callback(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode["status"] != "planning":
+            await interaction.response.send_message(
+                "Narrator requests are closed once recruitment ends.",
+                ephemeral=True,
+            )
+            return
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can manage narrator requests.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            view=EpisodeNarratorRequestsView(self.episode_id),
             ephemeral=True,
         )
 
@@ -2491,6 +2572,179 @@ class EpisodeCastView(discord.ui.LayoutView):
         )
 
 
+class EpisodeNarratorRequestsView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=300)
+        self.episode_id = episode_id
+        requests = get_episode_narrator_requests(episode_id)
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                "## ⟐ Narrator Requests\n"
+                "Approve one member to become the episode narrator, or deny their request.\n\n"
+                f"**Pending Requests:** {len(requests)}"
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        options = [
+            discord.SelectOption(
+                label=f"Narrator Request #{index + 1}",
+                description=f"From <@{request['user_id']}>"[:100],
+                value=str(request["user_id"]),
+            )
+            for index, request in enumerate(requests[:25])
+        ]
+        self.request_select = discord.ui.Select(
+            placeholder="Select a narrator request",
+            options=options or [
+                discord.SelectOption(
+                    label="No pending requests",
+                    value="none",
+                    default=True,
+                )
+            ],
+            min_values=1,
+            max_values=1,
+            disabled=not bool(options),
+        )
+        self.request_select.callback = self.select_callback
+        select_row = discord.ui.ActionRow()
+        select_row.add_item(self.request_select)
+        self.add_item(select_row)
+
+        actions = discord.ui.ActionRow()
+        approve = discord.ui.Button(
+            label="Approve",
+            style=discord.ButtonStyle.success,
+            disabled=not bool(options),
+        )
+        deny = discord.ui.Button(
+            label="Deny",
+            style=discord.ButtonStyle.danger,
+            disabled=not bool(options),
+        )
+        close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+        )
+        approve.callback = self.approve_callback
+        deny.callback = self.deny_callback
+        close.callback = self.close_callback
+        actions.add_item(approve)
+        actions.add_item(deny)
+        actions.add_item(close)
+        self.add_item(actions)
+        self.selected_user_id: int | None = None
+
+    async def allowed_creator(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.send_message(
+                "This episode no longer exists.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can manage narrator requests.",
+                ephemeral=True,
+            )
+            return False
+        if episode["status"] != "planning":
+            await interaction.response.send_message(
+                "Narrator requests are closed once recruitment ends.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        value = self.request_select.values[0]
+        if value == "none":
+            await interaction.response.send_message(
+                "There are no pending narrator requests.",
+                ephemeral=True,
+            )
+            return
+        self.selected_user_id = int(value)
+        await interaction.response.edit_message(view=self)
+
+    def selected_request(self) -> int | None:
+        if self.selected_user_id is not None:
+            return self.selected_user_id
+        if self.request_select.values and self.request_select.values[0] != "none":
+            return int(self.request_select.values[0])
+        return None
+
+    async def approve_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        selected = self.selected_request()
+        if selected is None:
+            await interaction.response.send_message(
+                "Select a request first.",
+                ephemeral=True,
+            )
+            return
+
+        episode = get_episode(self.episode_id)
+        cast_ids = {item["user_id"] for item in get_episode_cast(self.episode_id)}
+        if selected in cast_ids:
+            delete_episode_narrator_request(self.episode_id, selected)
+            await interaction.response.edit_message(
+                view=EpisodeNoticeView(
+                    "That requester is already in the cast, so their narrator request was removed."
+                ),
+            )
+            return
+
+        old_id = episode.get("narrator_id") if episode else None
+        set_episode_narrator(self.episode_id, selected)
+        clear_episode_narrator_requests(self.episode_id)
+
+        narrator_view = EpisodeNarratorView(self.episode_id)
+        await narrator_view.apply_channel_access(interaction, old_id, selected)
+
+        await interaction.response.edit_message(
+            view=EpisodeNoticeView(
+                f"## ⟐ NARRATOR APPROVED\n"
+                f"<@{selected}> is now the narrator for **Episode #{self.episode_id}**."
+            ),
+        )
+        await refresh_episode_lobby(interaction.client, self.episode_id)
+
+    async def deny_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        selected = self.selected_request()
+        if selected is None:
+            await interaction.response.send_message(
+                "Select a request first.",
+                ephemeral=True,
+            )
+            return
+
+        delete_episode_narrator_request(self.episode_id, selected)
+        await interaction.response.edit_message(
+            view=EpisodeNoticeView(
+                f"Narrator request from <@{selected}> was denied."
+            ),
+        )
+        await refresh_episode_lobby(interaction.client, self.episode_id)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        await interaction.response.edit_message(
+            view=EpisodeNarratorView(self.episode_id)
+        )
+
+
 class EpisodeNarratorView(discord.ui.LayoutView):
     def __init__(self, episode_id: int):
         super().__init__(timeout=300)
@@ -2533,8 +2787,20 @@ class EpisodeNarratorView(discord.ui.LayoutView):
             label="Close",
             style=discord.ButtonStyle.secondary,
         )
+        make_me = discord.ui.Button(
+            label="Make Me Narrator",
+            style=discord.ButtonStyle.primary,
+        )
+        requests = discord.ui.Button(
+            label="Narrator Requests",
+            style=discord.ButtonStyle.secondary,
+        )
         clear.callback = self.clear_callback
         close.callback = self.close_callback
+        make_me.callback = self.make_me_callback
+        requests.callback = self.requests_callback
+        actions.add_item(make_me)
+        actions.add_item(requests)
         actions.add_item(clear)
         actions.add_item(close)
         self.add_item(actions)
@@ -2550,6 +2816,12 @@ class EpisodeNarratorView(discord.ui.LayoutView):
         if interaction.user.id != episode["creator_id"]:
             await interaction.response.send_message(
                 "Only the episode creator can control the narrator.",
+                ephemeral=True,
+            )
+            return False
+        if episode["status"] != "planning":
+            await interaction.response.send_message(
+                "The narrator must be selected while the episode is recruiting.",
                 ephemeral=True,
             )
             return False
@@ -2610,6 +2882,31 @@ class EpisodeNarratorView(discord.ui.LayoutView):
                     )
                 except (discord.Forbidden, discord.HTTPException):
                     pass
+
+    async def make_me_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        old_id = episode.get("narrator_id") if episode else None
+        set_episode_narrator(self.episode_id, interaction.user.id)
+        clear_episode_narrator_requests(self.episode_id)
+        await self.apply_channel_access(interaction, old_id, interaction.user.id)
+
+        await interaction.response.edit_message(
+            view=EpisodeNoticeView(
+                f"## ⟐ NARRATOR ASSIGNED\n"
+                f"You are now the narrator for **Episode #{self.episode_id}**."
+            ),
+        )
+        await refresh_episode_lobby(interaction.client, self.episode_id)
+
+    async def requests_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        await interaction.response.edit_message(
+            view=EpisodeNarratorRequestsView(self.episode_id)
+        )
 
     async def select_callback(self, interaction: discord.Interaction):
         if not await self.allowed_creator(interaction):
@@ -2727,21 +3024,14 @@ class EpisodePrepView(discord.ui.LayoutView):
             custom_id=f"episode:{self.episode_id}:cast",
             style=discord.ButtonStyle.secondary,
         )
-        narrator = discord.ui.Button(
-            label="Narrator",
-            custom_id=f"episode:{self.episode_id}:narrator",
-            style=discord.ButtonStyle.secondary,
-        )
         begin.callback = self.begin_callback
         end.callback = self.end_callback
         cast.callback = self.cast_callback
-        narrator.callback = self.narrator_callback
 
         row = discord.ui.ActionRow()
         row.add_item(begin)
         row.add_item(end)
         row.add_item(cast)
-        row.add_item(narrator)
         self.add_item(row)
 
     async def allowed_creator(self, interaction: discord.Interaction) -> bool:
