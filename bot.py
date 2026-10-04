@@ -2525,6 +2525,16 @@ class EpisodePrepView(discord.ui.LayoutView):
                 300,
             )
 
+        try:
+            await interaction.channel.send(
+                "## ⟐ EPISODE CONCLUDED\n"
+                "This episode has ended. **This channel will be deleted in 5 minutes.**\n"
+                "If Archive Publishing is enabled, the episode and transcript have "
+                "been preserved in the archive channel."
+            )
+        except discord.HTTPException:
+            pass
+
         archive_result = None
         settings = get_roleplay_settings(interaction.guild.id)
         if settings.get("archive_enabled") and settings.get("archive_channel_id"):
