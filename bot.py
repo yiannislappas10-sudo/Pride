@@ -812,6 +812,17 @@ async def ensure_roleplay_channel(
         )
         return False
 
+    # Episode preparation/live channels are private RP spaces and should
+    # also allow OC viewing even when they are not part of the saved RP list.
+    for episode in get_episodes(interaction.guild.id, 100):
+        if episode.get("status") not in {"preparing", "active"}:
+            continue
+        if interaction.channel_id in {
+            episode.get("prep_channel_id"),
+            episode.get("channel_id"),
+        }:
+            return True
+
     settings = get_roleplay_settings(interaction.guild.id)
 
     if not settings["enabled"]:
