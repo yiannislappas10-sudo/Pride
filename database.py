@@ -236,6 +236,8 @@ def init_db():
             "lobby_channel_id INTEGER",
             "lobby_message_id INTEGER",
             "prep_message_id INTEGER",
+            "archive_published INTEGER NOT NULL DEFAULT 0",
+            "archive_published_at TEXT",
         ):
             column_name = column_sql.split()[0]
             if column_name not in episode_columns:
@@ -808,6 +810,7 @@ def update_episode(
     lobby_message_id: int | None = None,
     prep_message_id: int | None = None,
     narrator_id: int | None = None,
+    archive_published: bool | None = None,
 ):
     allowed_statuses = {"planning", "preparing", "active", "completed"}
 
@@ -849,6 +852,8 @@ def update_episode(
             values["prep_message_id"] = int(prep_message_id)
         if narrator_id is not None:
             values["narrator_id"] = int(narrator_id)
+        if archive_published is not None:
+            values["archive_published"] = 1 if archive_published else 0
 
         db.execute(
             """
@@ -868,6 +873,13 @@ def update_episode(
                 lobby_message_id = ?,
                 prep_message_id = ?,
                 narrator_id = ?,
+                archive_published = ?,
+                archive_published_at = CASE
+                    WHEN ? = 1 AND COALESCE(archive_published, 0) = 0
+                    THEN CURRENT_TIMESTAMP
+                    WHEN ? = 0 THEN NULL
+                    ELSE archive_published_at
+                END,
                 prep_started_at = CASE
                     WHEN ? = 'preparing' AND prep_started_at IS NULL
                     THEN CURRENT_TIMESTAMP
@@ -903,6 +915,9 @@ def update_episode(
                 values.get("lobby_message_id"),
                 values.get("prep_message_id"),
                 values.get("narrator_id"),
+                values.get("archive_published", 0),
+                values.get("archive_published", 0),
+                values.get("archive_published", 0),
                 values["status"],
                 values["status"],
                 values["status"],
@@ -912,6 +927,40 @@ def update_episode(
         db.commit()
 
     return get_episode(episode_id)
+
+
+def mark_episode_archive_published(episode_id: int, published: bool = True):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE episodes
+            SET archive_published = ?,
+                archive_published_at = CASE
+                    WHEN ? = 1 THEN CURRENT_TIMESTAMP
+                    ELSE NULL
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE episode_id = ?
+            """,
+            (1 if published else 0, 1 if published else 0, episode_id),
+        )
+        db.commit()
+
+
+def get_unpublished_completed_episodes(guild_id: int):
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM episodes
+            WHERE guild_id = ?
+              AND status = 'completed'
+              AND COALESCE(archive_published, 0) = 0
+            ORDER BY episode_id ASC
+            """,
+            (guild_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def delete_episode(episode_id: int):
