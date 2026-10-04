@@ -904,7 +904,7 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         selection_status = (
             "Matches saved settings"
             if selection_matches_saved
-            else "UNSAVED CHANGES — press Save Channels"
+            else "UNSAVED CHANGES — press Save RP Channels"
         )
         archive_text = (
             f"<#{self.archive_channel_id}>"
@@ -924,12 +924,13 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             f"**Archive Channel:** {archive_text}\n"
             f"**Publish Completed Episodes:** {archive_status}\n\n"
             "Choose RP channels in the first selector. "
-            "Choose one public archive channel in the second selector, then save it. "
-            "When publishing is ON, ended episodes are posted there with their full transcript."
+            "Choose one public archive channel in the second selector. "
+            "Use the archive controls below to save the channel and decide "
+            "whether completed episodes are published there."
         )
 
+        # Keep the V2 view within Discord's top-level child limit.
         self.add_item(discord.ui.TextDisplay(panel))
-        self.add_item(discord.ui.Separator())
 
         channel_row = discord.ui.ActionRow()
         self.channel_select = discord.ui.ChannelSelect(
@@ -953,8 +954,7 @@ class RoleplaySettingsView(discord.ui.LayoutView):
         archive_row.add_item(self.archive_channel_select)
         self.add_item(archive_row)
 
-        actions = discord.ui.ActionRow()
-
+        rp_actions = discord.ui.ActionRow()
         stop = discord.ui.Button(
             label="Stop Server RP",
             style=discord.ButtonStyle.danger,
@@ -973,6 +973,15 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             label="Clear RP Channels",
             style=discord.ButtonStyle.secondary,
         )
+        stop.callback = self.stop_callback
+        start.callback = self.start_callback
+        save.callback = self.save_callback
+        clear.callback = self.clear_callback
+        for item in (stop, start, save, clear):
+            rp_actions.add_item(item)
+        self.add_item(rp_actions)
+
+        archive_actions = discord.ui.ActionRow()
         archive_toggle = discord.ui.Button(
             label=f"Publish Episodes: {archive_status}",
             style=(
@@ -982,6 +991,10 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             ),
             disabled=self.archive_channel_id is None,
         )
+        archive_save = discord.ui.Button(
+            label="Save Archive",
+            style=discord.ButtonStyle.primary,
+        )
         archive_clear = discord.ui.Button(
             label="Clear Archive",
             style=discord.ButtonStyle.secondary,
@@ -990,23 +1003,13 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             label="Close",
             style=discord.ButtonStyle.secondary,
         )
-
-        stop.callback = self.stop_callback
-        start.callback = self.start_callback
-        save.callback = self.save_callback
-        clear.callback = self.clear_callback
         archive_toggle.callback = self.archive_toggle_callback
+        archive_save.callback = self.archive_save_callback
         archive_clear.callback = self.archive_clear_callback
         close.callback = self.close_callback
-
-        actions.add_item(stop)
-        actions.add_item(start)
-        actions.add_item(save)
-        actions.add_item(clear)
-        actions.add_item(archive_toggle)
-        actions.add_item(archive_clear)
-        actions.add_item(close)
-        self.add_item(actions)
+        for item in (archive_toggle, archive_save, archive_clear, close):
+            archive_actions.add_item(item)
+        self.add_item(archive_actions)
 
     async def allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None or interaction.guild.id != self.guild_id:
@@ -1045,6 +1048,32 @@ class RoleplaySettingsView(discord.ui.LayoutView):
             return
 
         self.archive_channel_id = self.archive_channel_select.values[0].id
+        await interaction.response.edit_message(
+            view=RoleplaySettingsView(
+                self.guild_id,
+                enabled=self.enabled,
+                selected_channel_ids=self.selected_channel_ids,
+                archive_channel_id=self.archive_channel_id,
+                archive_enabled=self.archive_enabled,
+            )
+        )
+
+    async def archive_save_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+
+        if self.archive_channel_id is None:
+            await interaction.response.send_message(
+                "Select an archive channel first.",
+                ephemeral=True,
+            )
+            return
+
+        save_archive_settings(
+            self.guild_id,
+            self.archive_channel_id,
+            self.archive_enabled,
+        )
         await interaction.response.edit_message(
             view=RoleplaySettingsView(
                 self.guild_id,
