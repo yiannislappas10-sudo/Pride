@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 import os
 import re
 
@@ -1477,13 +1478,15 @@ class EpisodeDetailsModal(discord.ui.Modal, title="Episode Details — Part II")
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         try:
             max_players = int(self.base["max_players"])
         except (TypeError, ValueError):
             max_players = 2
 
         if max_players < 1 or max_players > 25:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Max players must be between 1 and 25.",
                 ephemeral=True,
             )
@@ -1516,7 +1519,7 @@ class EpisodeDetailsModal(discord.ui.Modal, title="Episode Details — Part II")
             max_players,
         )
         if not episode:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I couldn't create the episode.",
                 ephemeral=True,
             )
@@ -1534,7 +1537,7 @@ class EpisodeDetailsModal(discord.ui.Modal, title="Episode Details — Part II")
             lobby_message_id=lobby_message.id,
         )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Episode **#{episode['episode_id']} — {episode['title']}** created and the recruitment lobby is ready.",
             ephemeral=True,
         )
@@ -1731,11 +1734,13 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         join = discord.ui.Button(
             label="Join with OC",
+            custom_id=f"episode:{self.episode_id}:join",
             style=discord.ButtonStyle.success,
             disabled=not episode or episode["status"] != "planning" or full,
         )
         start = discord.ui.Button(
             label="Start Episode",
+            custom_id=f"episode:{self.episode_id}:start",
             style=discord.ButtonStyle.primary,
             disabled=(
                 not episode
@@ -1745,16 +1750,19 @@ class EpisodeLobbyView(discord.ui.LayoutView):
         )
         details = discord.ui.Button(
             label="Full Details",
+            custom_id=f"episode:{self.episode_id}:details",
             style=discord.ButtonStyle.secondary,
             disabled=not bool(episode),
         )
         leave = discord.ui.Button(
             label="Leave Cast",
+            custom_id=f"episode:{self.episode_id}:leave",
             style=discord.ButtonStyle.secondary,
             disabled=not episode or episode["status"] != "planning",
         )
         cancel = discord.ui.Button(
             label="Cancel Episode",
+            custom_id=f"episode:{self.episode_id}:cancel",
             style=discord.ButtonStyle.danger,
             disabled=not bool(episode),
         )
@@ -1808,10 +1816,12 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             )
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         guild = interaction.guild
         bot_member = guild.me
         if bot_member is None or not guild.me.guild_permissions.manage_channels:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I need Manage Channels to create the private episode preparation ticket.",
                 ephemeral=True,
             )
@@ -1828,7 +1838,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
                     reason="Create private preparation tickets for RP episodes",
                 )
             except discord.Forbidden:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "I couldn't create the Episode Preparation category. Check my Manage Channels permission.",
                     ephemeral=True,
                 )
@@ -1871,7 +1881,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             prep_channel_id=channel.id,
         )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Preparation opened: {channel.mention}",
             ephemeral=True,
         )
@@ -1969,14 +1979,17 @@ class EpisodePrepView(discord.ui.LayoutView):
 
         begin = discord.ui.Button(
             label="Begin RP",
+            custom_id=f"episode:{self.episode_id}:begin",
             style=discord.ButtonStyle.success,
         )
         end = discord.ui.Button(
             label="End Episode",
+            custom_id=f"episode:{self.episode_id}:end",
             style=discord.ButtonStyle.danger,
         )
         cast = discord.ui.Button(
             label="View Cast",
+            custom_id=f"episode:{self.episode_id}:cast",
             style=discord.ButtonStyle.secondary,
         )
         begin.callback = self.begin_callback
@@ -2261,6 +2274,12 @@ class RPBot(commands.Bot):
     async def setup_hook(self):
         init_db()
 
+        for episode in get_episodes(DEV_GUILD_ID, 25):
+            if episode["status"] == "planning" and episode.get("lobby_message_id"):
+                self.add_view(EpisodeLobbyView(episode["episode_id"]))
+            if episode["status"] in {"preparing", "active"} and episode.get("prep_channel_id"):
+                self.add_view(EpisodePrepView(episode["episode_id"]))
+
         guild = discord.Object(id=DEV_GUILD_ID)
 
         # Remove all old global commands, including the previous /pride command.
@@ -2354,9 +2373,7 @@ async def episode_dashboard(interaction: discord.Interaction):
         )
 
     await interaction.response.send_message(
-        "## ⟐ Episode Studio
-" + "
-".join(lines),
+        "## ⟐ Episode Studio\n" + "\n".join(lines),
         ephemeral=True,
     )
 
