@@ -996,7 +996,11 @@ def remove_episode_cast(episode_id: int, user_id: int):
 
 
 def lock_episode_player_settings(episode_id: int):
-    """Snapshot each cast member's RP settings for the running episode."""
+    """Snapshot each cast member's OC/AI setting when the episode begins.
+
+    Personal RP is activated automatically at episode start; AI RP Format keeps
+    the player's last saved choice from before the prep timer ended.
+    """
     with closing(connect()) as db:
         db.execute(
             """
@@ -1011,20 +1015,13 @@ def lock_episode_player_settings(episode_id: int):
                     ),
                     0
                 ),
-                roleplay_active = COALESCE(
-                    (
-                        SELECT roleplay_active
-                        FROM player_config
-                        WHERE player_config.guild_id = episode_cast.guild_id
-                          AND player_config.user_id = episode_cast.user_id
-                    ),
-                    1
-                )
+                roleplay_active = 1
             WHERE episode_id = ?
             """,
             (episode_id,),
         )
         db.commit()
+
 
 
 def get_episode_preparation_remaining(episode_id: int, prep_seconds: int = 600):
