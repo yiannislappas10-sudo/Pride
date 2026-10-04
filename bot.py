@@ -2173,6 +2173,28 @@ class EpisodePrepView(discord.ui.LayoutView):
             else 0
         )
 
+        if episode:
+            if episode["status"] == "preparing":
+                panel_text = episode_prep_text(
+                    episode,
+                    get_episode_cast(episode_id),
+                    remaining,
+                )
+            elif episode["status"] == "active":
+                panel_text = (
+                    f"## ⟐ EPISODE {episode_id} — LIVE\n"
+                    f"**{episode['title']}**\n\n"
+                    f"{trim(episode.get('premise') or 'No premise provided.', 1200)}\n\n"
+                    "*The episode is live. Stay in character and use your selected OCs.*"
+                )
+            else:
+                panel_text = (
+                    f"## ⟐ EPISODE {episode_id} — {episode_status_label(episode['status'])}\n"
+                    f"**{episode['title']}**"
+                )
+            self.add_item(discord.ui.TextDisplay(panel_text))
+            self.add_item(discord.ui.Separator())
+
         begin = discord.ui.Button(
             label="Begin RP",
             custom_id=f"episode:{self.episode_id}:begin",
@@ -2255,13 +2277,7 @@ class EpisodePrepView(discord.ui.LayoutView):
             pass
 
         await interaction.response.edit_message(
-            content=(
-                f"## ⟐ EPISODE {self.episode_id} — LIVE\n"
-                f"**{episode['title']}**\n\n"
-                f"{trim(episode['premise'], 1200)}\n\n"
-                "*The episode is live. Stay in character and use your selected OCs.*"
-            ),
-            view=self,
+            view=EpisodePrepView(self.episode_id),
         )
 
     async def end_callback(self, interaction: discord.Interaction):
@@ -2278,12 +2294,11 @@ class EpisodePrepView(discord.ui.LayoutView):
 
         update_episode(self.episode_id, status="completed")
         await interaction.response.edit_message(
-            content=(
+            view=EpisodeNoticeView(
                 f"## ⟐ EPISODE {self.episode_id} — CONCLUDED\n"
                 f"**{episode['title']}**\n\n"
                 "The episode transcript has been preserved."
             ),
-            view=None,
         )
 
     async def cast_callback(self, interaction: discord.Interaction):
