@@ -2112,13 +2112,14 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             (
                 "## ⟐ RP SETTINGS — PREP REMINDER\n"
                 f"{cast_mentions}\n\n"
-                "The bot will take over your OC messages when the preparation "
-                "timer ends and the RP begins.\n\n"
-                "**Set everything now:** use `/oc settings` to choose your "
-                "active OC, keep **Personal RP** ON, and enable **AI RP Format** "
-                "if you want Pride to add RP actions/dialogue cues.\n\n"
-                "⚠ These settings are locked for this episode when prep ends. "
-                "Changing them afterward will not affect the running episode."
+                "The bot will automatically take over your OC when the "
+                "10-minute preparation timer ends and the episode is ready for RP.\n\n"
+                "**Before the timer reaches 0:** use `/oc settings` to check your "
+                "active OC and enable **AI RP Format** if you want Pride to add "
+                "RP actions/dialogue cues. **Personal RP turns ON automatically "
+                "when prep ends.**\n\n"
+                "⚠ Your OC and AI RP setting are locked for this episode when "
+                "prep ends. You cannot change them afterward."
             ),
             allowed_mentions=discord.AllowedMentions(
                 users=True,
@@ -2451,8 +2452,8 @@ class EpisodePrepView(discord.ui.LayoutView):
             )
             return
 
-        # Snapshot the players' current RP settings before the first relay.
-        lock_episode_player_settings(self.episode_id)
+        # Player settings were locked when the preparation timer ended.
+        # Do not re-snapshot here, so changes made afterward cannot affect this episode.
 
         update_episode(
             self.episode_id,
@@ -2627,6 +2628,9 @@ class RPBot(commands.Bot):
                         pass
 
             if remaining <= 0:
+                # Prep has ended: automatically activate Personal RP and lock
+                # the cast's last saved AI RP choice for this episode.
+                lock_episode_player_settings(episode_id)
                 return
             await asyncio.sleep(min(30, max(1, remaining)))
 
