@@ -42,6 +42,8 @@ from database import (
     get_episode_narrator_requests,
     delete_episode_narrator_request,
     clear_episode_narrator_requests,
+    mark_episode_archive_published,
+    get_unpublished_completed_episodes,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -2459,6 +2461,8 @@ async def publish_episode_archive(
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    mark_episode_archive_published(episode["episode_id"], True)
+
 
 class EpisodeCastView(discord.ui.LayoutView):
     def __init__(self, episode_id: int):
@@ -3118,7 +3122,7 @@ class EpisodePrepView(discord.ui.LayoutView):
 
         cleanup_channel_id = episode.get("channel_id") or episode.get("prep_channel_id")
 
-        update_episode(self.episode_id, status="completed")
+        update_episode(self.episode_id, status="completed", archive_published=False)
         episode = get_episode(self.episode_id) or episode
 
         if cleanup_channel_id:
@@ -3148,18 +3152,21 @@ class EpisodePrepView(discord.ui.LayoutView):
                 try:
                     await publish_episode_archive(archive_channel, episode)
                     archive_result = f"\n\nArchived in {archive_channel.mention}."
-                except discord.HTTPException as exc:
+                except (discord.Forbidden, discord.HTTPException) as exc:
                     print(
                         f"Episode archive failed for #{self.episode_id}: {exc}"
                     )
                     archive_result = (
-                        "\n\nThe archive could not be published. "
-                        "Check the archive channel permissions."
+                        "\n\nThe archive could not be published right now. "
+                        "The completed episode is saved and Pride will retry it."
                     )
             else:
                 archive_result = (
-                    "\n\nThe configured archive channel could not be found."
+                    "\n\nThe configured archive channel could not be found. "
+                    "The completed episode is saved and will be retried."
                 )
+        else:
+            archive_result = "\n\nArchive publishing is currently OFF; the completed episode is saved."
 
         await interaction.response.edit_message(
             view=EpisodeNoticeView(
@@ -3630,7 +3637,30 @@ class RPBot(commands.Bot):
             "global command set cleared."
         )
 
+    async def retry_unpublished_archives(self):
+        settings = get_roleplay_settings(DEV_GUILD_ID)
+        if not settings.get("archive_enabled") or not settings.get("archive_channel_id"):
+            return
+
+        channel = self.get_channel(settings["archive_channel_id"])
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(settings["archive_channel_id"])
+            except (discord.NotFound, discord.HTTPException):
+                return
+
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        for episode in get_unpublished_completed_episodes(DEV_GUILD_ID):
+            try:
+                await publish_episode_archive(channel, episode)
+                print(f"Recovered archive publication for episode #{episode['episode_id']}")
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"Archive retry failed for episode #{episode['episode_id']}: {exc}")
+
     async def on_ready(self):
+        await self.retry_unpublished_archives()
         print(
             f"RP Bot online as {self.user} "
             f"({self.user.id if self.user else 'unknown'})"
