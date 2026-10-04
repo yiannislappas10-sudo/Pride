@@ -228,6 +228,7 @@ def init_db():
             "details TEXT DEFAULT ''",
             "max_players INTEGER NOT NULL DEFAULT 2",
             "prep_channel_id INTEGER",
+            "narrator_id INTEGER",
         ):
             column_name = column_sql.split()[0]
             if column_name not in episode_columns:
@@ -246,6 +247,40 @@ def init_db():
                 db.execute(
                     f"ALTER TABLE episodes ADD COLUMN {column_sql}"
                 )
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS episode_messages (
+                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL DEFAULT 0,
+                character_name TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                discord_message_id INTEGER,
+                content TEXT NOT NULL,
+                message_type TEXT NOT NULL DEFAULT 'character',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (episode_id) REFERENCES episodes(episode_id)
+            )
+        """)
+
+        episode_message_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(episode_messages)"
+            ).fetchall()
+        }
+        if "message_type" not in episode_message_columns:
+            db.execute(
+                "ALTER TABLE episode_messages ADD COLUMN "
+                "message_type TEXT NOT NULL DEFAULT 'character'"
+            )
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_episode_messages_episode
+            ON episode_messages(episode_id, message_id ASC)
+        """)
 
         db.commit()
 
@@ -761,6 +796,7 @@ def update_episode(
     lobby_channel_id: int | None = None,
     lobby_message_id: int | None = None,
     prep_message_id: int | None = None,
+    narrator_id: int | None = None,
 ):
     allowed_statuses = {"planning", "preparing", "active", "completed"}
 
@@ -800,6 +836,8 @@ def update_episode(
             values["lobby_message_id"] = int(lobby_message_id)
         if prep_message_id is not None:
             values["prep_message_id"] = int(prep_message_id)
+        if narrator_id is not None:
+            values["narrator_id"] = int(narrator_id)
 
         db.execute(
             """
@@ -818,6 +856,7 @@ def update_episode(
                 lobby_channel_id = ?,
                 lobby_message_id = ?,
                 prep_message_id = ?,
+                narrator_id = ?,
                 prep_started_at = CASE
                     WHEN ? = 'preparing' AND prep_started_at IS NULL
                     THEN CURRENT_TIMESTAMP
@@ -852,6 +891,7 @@ def update_episode(
                 values.get("lobby_channel_id"),
                 values.get("lobby_message_id"),
                 values.get("prep_message_id"),
+                values.get("narrator_id"),
                 values["status"],
                 values["status"],
                 values["status"],
@@ -906,6 +946,19 @@ def add_episode_cast(
         db.commit()
 
 
+def set_episode_narrator(episode_id: int, narrator_id: int | None):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE episodes
+            SET narrator_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE episode_id = ?
+            """,
+            (int(narrator_id) if narrator_id is not None else None, episode_id),
+        )
+        db.commit()
+
+
 def get_active_episode(guild_id: int, channel_id: int):
     with closing(connect()) as db:
         row = db.execute(
@@ -930,9 +983,14 @@ def save_episode_message(
     channel_id: int,
     discord_message_id: int | None,
     content: str,
+    message_type: str = "character",
 ):
     content = (content or "").strip()[:2000]
     character_name = (character_name or "Character").strip()[:100]
+    message_type = (
+        "narrator" if str(message_type).strip().lower() == "narrator"
+        else "character"
+    )
     if not content:
         return
 
@@ -941,9 +999,10 @@ def save_episode_message(
             """
             INSERT INTO episode_messages (
                 episode_id, guild_id, user_id, character_id,
-                character_name, channel_id, discord_message_id, content
+                character_name, channel_id, discord_message_id, content,
+                message_type
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 episode_id,
@@ -954,6 +1013,7 @@ def save_episode_message(
                 channel_id,
                 discord_message_id,
                 content,
+                message_type,
             ),
         )
         db.commit()
