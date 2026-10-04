@@ -229,6 +229,7 @@ def init_db():
         for column_sql in (
             "lobby_channel_id INTEGER",
             "lobby_message_id INTEGER",
+            "prep_message_id INTEGER",
         ):
             column_name = column_sql.split()[0]
             if column_name not in episode_columns:
@@ -711,6 +712,7 @@ def update_episode(
     max_players: int | None = None,
     lobby_channel_id: int | None = None,
     lobby_message_id: int | None = None,
+    prep_message_id: int | None = None,
 ):
     allowed_statuses = {"planning", "preparing", "active", "completed"}
 
@@ -748,6 +750,8 @@ def update_episode(
             values["lobby_channel_id"] = int(lobby_channel_id)
         if lobby_message_id is not None:
             values["lobby_message_id"] = int(lobby_message_id)
+        if prep_message_id is not None:
+            values["prep_message_id"] = int(prep_message_id)
 
         db.execute(
             """
@@ -765,6 +769,7 @@ def update_episode(
                 max_players = ?,
                 lobby_channel_id = ?,
                 lobby_message_id = ?,
+                prep_message_id = ?,
                 prep_started_at = CASE
                     WHEN ? = 'preparing' AND prep_started_at IS NULL
                     THEN CURRENT_TIMESTAMP
@@ -798,6 +803,7 @@ def update_episode(
                 values.get("max_players", 2),
                 values.get("lobby_channel_id"),
                 values.get("lobby_message_id"),
+                values.get("prep_message_id"),
                 values["status"],
                 values["status"],
                 values["status"],
