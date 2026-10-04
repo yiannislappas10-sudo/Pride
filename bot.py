@@ -1370,6 +1370,12 @@ class PlayerSettingsView(discord.ui.LayoutView):
 
 
 
+class EpisodeNoticeView(discord.ui.LayoutView):
+    def __init__(self, text: str):
+        super().__init__(timeout=300)
+        self.add_item(discord.ui.TextDisplay(text))
+
+
 def episode_status_label(status: str) -> str:
     return {
         "planning": "RECRUITING",
@@ -1419,10 +1425,6 @@ async def refresh_episode_lobby(bot: "RPBot", episode_id: int):
     try:
         message = await channel.fetch_message(message_id)
         await message.edit(
-            content=episode_lobby_text(
-                episode,
-                get_episode_cast(episode_id),
-            ),
             view=EpisodeLobbyView(episode_id),
         )
     except (discord.NotFound, discord.HTTPException):
@@ -1528,7 +1530,6 @@ class EpisodeDetailsModal(discord.ui.Modal, title="Episode Details — Part II")
             return
 
         lobby_message = await interaction.channel.send(
-            content=episode_lobby_text(episode, []),
             view=EpisodeLobbyView(episode["episode_id"]),
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -1652,8 +1653,7 @@ class EpisodeDetailsPromptView(discord.ui.LayoutView):
 
         async def cancel_callback(interaction: discord.Interaction):
             await interaction.response.edit_message(
-                content="Episode creation cancelled.",
-                view=None,
+                view=EpisodeNoticeView("Episode creation cancelled."),
             )
 
         continue_button.callback = continue_callback
@@ -1761,10 +1761,9 @@ class EpisodeJoinView(discord.ui.LayoutView):
 
         episode = get_episode(self.episode_id)
         await interaction.response.edit_message(
-            content=(
+            view=EpisodeNoticeView(
                 f"Joined **{episode['title']}** with **{get_character(int(selected))['name']}**."
             ),
-            view=None,
         )
         await refresh_episode_lobby(interaction.client, self.episode_id)
 
@@ -1776,6 +1775,9 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         episode = get_episode(episode_id)
         cast = get_episode_cast(episode_id) if episode else []
+        if episode:
+            self.add_item(discord.ui.TextDisplay(episode_lobby_text(episode, cast)))
+            self.add_item(discord.ui.Separator())
         full = bool(episode) and len(cast) >= int(episode.get("max_players") or 2)
 
         join = discord.ui.Button(
@@ -1934,11 +1936,6 @@ class EpisodeLobbyView(discord.ui.LayoutView):
         )
 
         prep_message = await channel.send(
-            content=episode_prep_text(
-                episode,
-                cast,
-                get_episode_preparation_remaining(self.episode_id),
-            ),
             view=EpisodePrepView(self.episode_id),
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -2018,8 +2015,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         delete_episode(self.episode_id)
         await interaction.response.edit_message(
-            content="*This episode was cancelled by its creator.*",
-            view=None,
+            view=EpisodeNoticeView("*This episode was cancelled by its creator.*"),
         )
 
 
@@ -2156,17 +2152,11 @@ class EpisodeCastView(discord.ui.LayoutView):
         episode = get_episode(self.episode_id)
         if not episode:
             await interaction.response.edit_message(
-                content="This episode no longer exists.",
-                view=None,
+                view=EpisodeNoticeView("This episode no longer exists."),
             )
             return
 
         await interaction.response.edit_message(
-            content=episode_prep_text(
-                episode,
-                get_episode_cast(self.episode_id),
-                get_episode_preparation_remaining(self.episode_id),
-            ),
             view=EpisodePrepView(self.episode_id),
         )
 
@@ -2346,11 +2336,6 @@ class RPBot(commands.Bot):
                     try:
                         message = await channel.fetch_message(message_id)
                         await message.edit(
-                            content=episode_prep_text(
-                                episode,
-                                get_episode_cast(episode_id),
-                                remaining,
-                            ),
                             view=EpisodePrepView(episode_id),
                         )
                     except (discord.NotFound, discord.HTTPException):
