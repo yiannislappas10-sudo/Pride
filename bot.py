@@ -1,5 +1,6 @@
 import asyncio
 import asyncio
+import datetime
 import os
 import re
 
@@ -2459,7 +2460,16 @@ class EpisodePrepView(discord.ui.LayoutView):
             )
             return
 
+        cleanup_channel_id = episode.get("channel_id") or episode.get("prep_channel_id")
+
         update_episode(self.episode_id, status="completed")
+
+        if cleanup_channel_id:
+            interaction.client.schedule_episode_cleanup(
+                self.episode_id,
+                int(cleanup_channel_id),
+                300,
+            )
 
         archive_result = None
         settings = get_roleplay_settings(interaction.guild.id)
@@ -2518,6 +2528,50 @@ class RPBot(commands.Bot):
         super().__init__(*args, **kwargs)
         self.rp_webhook_cache: dict[int, discord.Webhook] = {}
         self.episode_prep_tasks: dict[int, asyncio.Task] = {}
+        self.episode_cleanup_tasks: dict[int, asyncio.Task] = {}
+
+    def schedule_episode_cleanup(
+        self,
+        episode_id: int,
+        channel_id: int,
+        delay_seconds: int = 300,
+    ):
+        task = self.episode_cleanup_tasks.get(episode_id)
+        if task and not task.done():
+            return
+
+        self.episode_cleanup_tasks[episode_id] = asyncio.create_task(
+            self._episode_cleanup_timer(
+                episode_id,
+                channel_id,
+                delay_seconds,
+            )
+        )
+
+    async def _episode_cleanup_timer(
+        self,
+        episode_id: int,
+        channel_id: int,
+        delay_seconds: int,
+    ):
+        try:
+            await asyncio.sleep(max(0, delay_seconds))
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await self.fetch_channel(channel_id)
+                except (discord.NotFound, discord.HTTPException):
+                    return
+
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await channel.delete(
+                        reason=f"Episode #{episode_id} ended; automatic 5-minute cleanup"
+                    )
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+        finally:
+            self.episode_cleanup_tasks.pop(episode_id, None)
 
     def schedule_episode_prep_timer(self, episode_id: int):
         task = self.episode_prep_tasks.get(episode_id)
@@ -2728,6 +2782,26 @@ class RPBot(commands.Bot):
         init_db()
 
         for episode in get_episodes(DEV_GUILD_ID, 25):
+            if episode["status"] == "completed":
+                cleanup_channel_id = episode.get("channel_id") or episode.get("prep_channel_id")
+                ended_at = episode.get("ended_at")
+                if cleanup_channel_id and ended_at:
+                    try:
+                        ended = datetime.datetime.fromisoformat(
+                            ended_at.replace("Z", "+00:00")
+                        )
+                        if ended.tzinfo is None:
+                            ended = ended.replace(tzinfo=datetime.timezone.utc)
+                        age = (
+                            datetime.datetime.now(datetime.timezone.utc) - ended
+                        ).total_seconds()
+                        self.schedule_episode_cleanup(
+                            episode["episode_id"],
+                            int(cleanup_channel_id),
+                            max(0, int(300 - age)),
+                        )
+                    except (TypeError, ValueError):
+                        pass
             if episode["status"] == "planning" and episode.get("lobby_message_id"):
                 self.add_view(EpisodeLobbyView(episode["episode_id"]))
             if episode["status"] in {"preparing", "active"} and episode.get("prep_channel_id"):
