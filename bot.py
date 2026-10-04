@@ -37,6 +37,7 @@ from database import (
     get_episode_message_count,
     get_episode_messages,
     get_episode_preparation_remaining,
+    lock_episode_player_settings,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -2105,6 +2106,26 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             self.episode_id,
             prep_message_id=prep_message.id,
         )
+
+        cast_mentions = " ".join(f"<@{item['user_id']}>" for item in cast)
+        await channel.send(
+            (
+                "## ⟐ RP SETTINGS — PREP REMINDER\n"
+                f"{cast_mentions}\n\n"
+                "The bot will take over your OC messages when the preparation "
+                "timer ends and the RP begins.\n\n"
+                "**Set everything now:** use `/oc settings` to choose your "
+                "active OC, keep **Personal RP** ON, and enable **AI RP Format** "
+                "if you want Pride to add RP actions/dialogue cues.\n\n"
+                "⚠ These settings are locked for this episode when prep ends. "
+                "Changing them afterward will not affect the running episode."
+            ),
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+            ),
+        )
         interaction.client.schedule_episode_prep_timer(self.episode_id)
 
         await refresh_episode_lobby(interaction.client, self.episode_id)
@@ -2430,6 +2451,9 @@ class EpisodePrepView(discord.ui.LayoutView):
             )
             return
 
+        # Snapshot the players' current RP settings before the first relay.
+        lock_episode_player_settings(self.episode_id)
+
         update_episode(
             self.episode_id,
             status="active",
@@ -2634,10 +2658,40 @@ class RPBot(commands.Bot):
             if message.author.id not in {item["user_id"] for item in cast}:
                 return
 
-        if not get_player_roleplay_active(message.guild.id, message.author.id):
+        episode_cast_entry = None
+        if active_episode:
+            episode_cast_entry = next(
+                (
+                    item
+                    for item in get_episode_cast(active_episode["episode_id"])
+                    if item["user_id"] == message.author.id
+                ),
+                None,
+            )
+            if episode_cast_entry is None:
+                return
+
+        if active_episode:
+            roleplay_active = bool(episode_cast_entry.get("roleplay_active", 1))
+            character_id = episode_cast_entry["character_id"]
+            auto_rp_format = bool(episode_cast_entry.get("auto_rp_format", 0))
+        else:
+            roleplay_active = get_player_roleplay_active(
+                message.guild.id,
+                message.author.id,
+            )
+            character_id = get_active_character_id(
+                message.guild.id,
+                message.author.id,
+            )
+            auto_rp_format = get_player_auto_rp_format(
+                message.guild.id,
+                message.author.id,
+            )
+
+        if not roleplay_active:
             return
 
-        character_id = get_active_character_id(message.guild.id, message.author.id)
         character = get_character(character_id) if character_id else None
         if not character or character["user_id"] != message.author.id:
             return
@@ -2706,10 +2760,7 @@ class RPBot(commands.Bot):
             # Delete the user's message immediately after the relay is safely posted.
             await message.delete()
 
-            if get_player_auto_rp_format(
-                message.guild.id,
-                message.author.id,
-            ):
+            if auto_rp_format:
                 examples = get_rp_learning_examples(
                     message.guild.id,
                     message.author.id,
