@@ -54,7 +54,7 @@ def trim(value: str, limit: int = 1024) -> str:
 
 
 def smart_rp_format(character_name: str, content: str) -> str:
-    """Local, zero-cost RP formatter. No API or external model required."""
+    """Local, zero-cost RP formatter with many contextual RP cues."""
     text = re.sub(r"\s+", " ", (content or "").strip())
     if not text:
         return text
@@ -62,7 +62,6 @@ def smart_rp_format(character_name: str, content: str) -> str:
     name = character_name.strip() or "Character"
     lower = text.lower()
 
-    # Preserve actions/cues already written by the player.
     explicit = bool(re.search(
         r"(^|\s)(\*[^*]+\*|_[^_]+_|\([^)]{2,80}\))($|\s)",
         text,
@@ -71,39 +70,72 @@ def smart_rp_format(character_name: str, content: str) -> str:
     cue = None
     action = None
 
-    # Delivery / emotion cues.
-    if re.search(r"\b(whisper|whispers|quietly|keep your voice down|lower your voice)\b", lower):
-        cue = "(whispers)"
-    elif text.isupper() and len(re.sub(r"[^A-Z]", "", text)) >= 3:
-        cue = "(shouts)"
-    elif re.search(r"[!?]{2,}|\b(what\s+the|no way|are you serious)\b", lower):
-        cue = "(startled)"
-    elif re.search(r"\b(ugh|sigh|sighs|fine\.\.\.|whatever\.\.\.)\b", lower):
-        cue = "(sighs)"
+    cue_patterns = [
+        (r"\b(whisper|whispers|whispering|quietly|under (?:their|his|her) breath|keep your voice down|lower your voice)\b", "whispers"),
+        (r"\b(shout|shouts|shouting|yell|yells|yelling|scream|screams|screaming)\b", "shouts"),
+        (r"\b(laugh|laughs|laughing|chuckle|chuckles|giggling|giggles)\b", "laughs"),
+        (r"\b(sigh|sighs|sighing|exhales|exhale)\b", "sighs"),
+        (r"\b(groan|groans|groaning|grumble|grumbles)\b", "grumbles"),
+        (r"\b(mutters|mutter|muttering|mumbles|mumble)\b", "murmurs"),
+        (r"\b(gasp|gasps|gasping)\b", "gasps"),
+        (r"\b(cry|cries|crying|sob|sobs|sobbing)\b", "voice cracks"),
+        (r"\b(angry|furious|enraged)\b|!{2,}", "angrily"),
+        (r"\b(nervous|worried|anxious|uneasy)\b|\.{3,}", "nervously"),
+    ]
 
-    # Contextual actions for messages that naturally imply them.
+    for pattern, label in cue_patterns:
+        if re.search(pattern, lower):
+            cue = label
+            break
+
     if not explicit and cue is None:
-        if re.search(r"\b(is anyone here|anyone here|hello\?|anybody here)\b", lower):
-            action = "*looks around*"
-        elif re.search(r"\b(are you there|can you hear me|hello)\b", lower):
-            action = "*looks around*"
-        elif re.search(r"\b(wait|hold on|one second)\b", lower):
-            action = "*pauses*"
-        elif re.search(r"\b(come here|over here|follow me)\b", lower):
-            action = "*gestures for them to come closer*"
-        elif re.search(r"\b(look at this|look here|check this out)\b", lower):
-            action = "*gestures toward it*"
-        elif re.search(r"\b(i'm leaving|im leaving|i should go|gotta go|have to go)\b", lower):
-            action = "*turns to leave*"
-        elif re.search(r"\b(come in|enter|you can come in)\b", lower):
-            action = "*motions toward the entrance*"
+        action_patterns = [
+            (r"\b(is anyone here|anyone here|anybody here)\b", "looks around"),
+            (r"\b(hello\??|hey\??|anyone there\??)\b", "looks around"),
+            (r"\b(are you there|can you hear me)\b", "looks around"),
+            (r"\b(wait|hold on|one second|give me a second)\b", "pauses"),
+            (r"\b(come here|over here|follow me|come with me)\b", "gestures for them to come closer"),
+            (r"\b(look at this|look here|check this out)\b", "gestures toward it"),
+            (r"\b(i['’]?m leaving|i should go|gotta go|have to go|i have to leave)\b", "turns to leave"),
+            (r"\b(come in|enter|you can come in)\b", "motions toward the entrance"),
+            (r"\b(sit down|take a seat)\b", "gestures toward a seat"),
+            (r"\b(stand up|get up)\b", "straightens up"),
+            (r"\b(what happened|what's going on|what is happening)\b", "looks around, confused"),
+            (r"\b(what do you mean|why did you do that|why are you)\b", "raises an eyebrow"),
+            (r"\b(really|seriously|are you serious)\??$", "raises an eyebrow"),
+            (r"\b(thank you|thanks)\b", "gives a small nod"),
+            (r"\b(sorry|i'm sorry|im sorry)\b", "looks apologetic"),
+            (r"\b(i don't know|idk|no idea)\b", "shrugs"),
+            (r"\b(maybe|i guess|i suppose)\b", "shrugs slightly"),
+            (r"\b(yes|yeah|yep|sure|okay|ok)\b$", "nods"),
+            (r"\b(no|nope|nah)\b$", "shakes their head"),
+            (r"\b(be careful|watch out|look out)\b", "glances around cautiously"),
+            (r"\b(i'm scared|im scared|i'm afraid|im afraid)\b", "takes a nervous step back"),
+            (r"\b(i'm tired|im tired|i'm exhausted|im exhausted)\b", "rubs their eyes"),
+            (r"\b(i'm cold|im cold)\b", "pulls their arms closer"),
+            (r"\b(i'm hungry|im hungry)\b", "glances toward the nearest food"),
+            (r"\b(where is|where's)\b", "looks around"),
+            (r"\b(come on|hurry up)\b", "motions impatiently"),
+            (r"\b(leave me alone|get away from me)\b", "steps back"),
+            (r"\b(i love you|love you)\b", "softens their expression"),
+            (r"\b(i hate you|hate you)\b", "glares"),
+            (r"\b(shut up|be quiet)\b", "glares sharply"),
+            (r"\b(what the hell|what the fuck|wtf)\b", "stares in disbelief"),
+            (r"\b(good morning|good night|good evening)\b", "offers a small nod"),
+        ]
 
+        for pattern, act in action_patterns:
+            if re.search(pattern, lower):
+                action = act
+                break
+
+    # Strongly differentiate generated RP cues without creating a second message.
     if explicit:
         formatted = text
     elif cue:
-        formatted = f"{cue} {text}"
+        formatted = f"**({cue})** {text}"
     elif action:
-        formatted = f"{action} {text}"
+        formatted = f"**✶ {action}** {text}"
     else:
         formatted = text
 
