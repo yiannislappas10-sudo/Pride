@@ -1616,9 +1616,6 @@ class EpisodeCreateModal(discord.ui.Modal, title="Create Episode — Part I"):
         }
 
         await interaction.response.send_message(
-            "## ⟐ Episode Setup — Part II\n"
-            "The first page is saved. Press **Continue to Details** to "
-            "open the second page and finish the episode setup.",
             view=EpisodeDetailsPromptView(base),
             ephemeral=True,
         )
