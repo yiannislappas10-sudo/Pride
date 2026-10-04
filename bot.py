@@ -3406,17 +3406,9 @@ class RPBot(commands.Bot):
             print(f"Unexpected narrator relay error in channel {channel.id}: {exc}")
             self.rp_webhook_cache.pop(cache_key, None)
 
-    async def on_interaction(self, interaction: discord.Interaction):
-        # Pride is currently restricted to Project Haven while it is in testing.
-        if interaction.guild is not None and interaction.guild.id != DEV_GUILD_ID:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "Pride is currently only available in Project Haven.",
-                    ephemeral=True,
-                )
-            return
-        await super().on_interaction(interaction)
-
+    # Component interactions are dispatched by discord.py itself.
+    # Do not override on_interaction: commands.Bot has no super on_interaction,
+    # and calling it prevents every button/select callback from running.
     async def on_message(self, message: discord.Message):
         # Pride is currently restricted to Project Haven while it is in testing.
         if message.guild is not None and message.guild.id != DEV_GUILD_ID:
