@@ -1,5 +1,4 @@
 import asyncio
-import asyncio
 import datetime
 import os
 import re
@@ -38,6 +37,7 @@ from database import (
     get_episode_messages,
     get_episode_preparation_remaining,
     lock_episode_player_settings,
+    set_episode_narrator,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -1554,7 +1554,8 @@ def episode_lobby_text(episode: dict, cast: list[dict]) -> str:
         f"*{status}*\n\n"
         f"**Players:** {len(cast)}/{episode.get('max_players', 2)}\n"
         f"**Location:** {episode.get('location') or 'Not set'}\n"
-        f"**Tone:** {episode.get('tone') or 'Not set'}\n\n"
+        f"**Tone:** {episode.get('tone') or 'Not set'}\n"
+        f"**Narrator:** {f"<@{episode['narrator_id']}>" if episode.get('narrator_id') else 'None assigned'}\n\n"
         f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 750)}\n\n"
         f"**Additional Details**\n{trim(details, 900)}\n\n"
         f"**Cast**\n{cast_text}"
@@ -2010,6 +2011,35 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             row.add_item(item)
         self.add_item(row)
 
+        narrator = discord.ui.Button(
+            label="Set Narrator",
+            style=discord.ButtonStyle.secondary,
+            disabled=not episode or episode["status"] != "planning",
+        )
+        narrator.callback = self.narrator_callback
+        narrator_row = discord.ui.ActionRow()
+        narrator_row.add_item(narrator)
+        self.add_item(narrator_row)
+
+    async def narrator_callback(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode["status"] != "planning":
+            await interaction.response.send_message(
+                "The narrator can only be assigned while the episode is recruiting.",
+                ephemeral=True,
+            )
+            return
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can assign the narrator.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            view=EpisodeNarratorView(self.episode_id),
+            ephemeral=True,
+        )
+
     async def join_callback(self, interaction: discord.Interaction):
         episode = get_episode(self.episode_id)
         if not episode or episode["status"] != "planning":
@@ -2090,6 +2120,8 @@ class EpisodeLobbyView(discord.ui.LayoutView):
 
         allowed_user_ids = {episode["creator_id"]}
         allowed_user_ids.update(item["user_id"] for item in cast)
+        if episode.get("narrator_id"):
+            allowed_user_ids.add(int(episode["narrator_id"]))
         for user_id in allowed_user_ids:
             # get_member() can miss users who are not currently in cache.
             # Fetch them so every joined cast member receives the overwrite.
@@ -2252,6 +2284,11 @@ def episode_prep_text(episode: dict, cast: list[dict], remaining: int) -> str:
             cast_lines.append(f"<@{item['user_id']}> — **Deleted OC**")
 
     cast_text = "\n".join(cast_lines) if cast_lines else "*No cast recorded.*"
+    narrator_text = (
+        f"<@{episode['narrator_id']}>"
+        if episode.get("narrator_id")
+        else "None assigned"
+    )
 
     text = (
         f"## ⟐ EPISODE {episode['episode_id']} — PREPARATION\n"
@@ -2259,11 +2296,83 @@ def episode_prep_text(episode: dict, cast: list[dict], remaining: int) -> str:
         f"{prep_status}\n\n"
         f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 850)}\n\n"
         f"**Location:** {episode.get('location') or 'Not set'}\n"
-        f"**Tone:** {episode.get('tone') or 'Not set'}\n\n"
+        f"**Tone:** {episode.get('tone') or 'Not set'}\n"
+        f"**Narrator:** {narrator_text}\n\n"
         f"### Selected Cast\n{cast_text}\n\n"
         "*Everyone in this ticket may inspect the selected OCs before the episode begins.*"
     )
     return text[:1900]
+
+
+async def publish_episode_archive(
+    channel: discord.TextChannel,
+    episode: dict,
+):
+    cast = get_episode_cast(episode["episode_id"])
+    messages = get_episode_messages(episode["episode_id"])
+
+    cast_lines = []
+    for item in cast:
+        character = get_character(item["character_id"])
+        cast_lines.append(
+            f"<@{item['user_id']}> — **{character['name'] if character else 'Deleted OC'}**"
+        )
+
+    cast_text = "\n".join(cast_lines) if cast_lines else "*No cast recorded.*"
+    narrator_text = (
+        f"<@{episode['narrator_id']}>"
+        if episode.get("narrator_id")
+        else "None assigned"
+    )
+
+    header = (
+        f"## ⟐ EPISODE {episode['episode_id']} — {episode['title']}\n"
+        f"**Premise**\n{trim(episode.get('premise') or 'No premise provided.', 1200)}\n\n"
+        f"**Location:** {episode.get('location') or 'Not set'}\n"
+        f"**Tone:** {episode.get('tone') or 'Not set'}\n"
+        f"**Narrator:** {narrator_text}\n\n"
+        f"### Cast\n{cast_text}\n\n"
+        "### Transcript"
+    )
+    await channel.send(
+        header[:2000],
+        allowed_mentions=discord.AllowedMentions(
+            users=True,
+            roles=False,
+            everyone=False,
+        ),
+    )
+
+    current = ""
+    for item in messages:
+        if item.get("message_type") == "narrator":
+            line = f"**Narrator:** {item['content']}"
+        else:
+            line = f"**{item.get('character_name') or 'Character'}:** {item['content']}"
+        line = line.strip()
+        if not line:
+            continue
+        if len(line) > 1800:
+            line = line[:1797] + "..."
+        if current and len(current) + len(line) + 1 > 1900:
+            await channel.send(
+                current,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            current = line
+        else:
+            current = f"{current}\n{line}".strip()
+
+    if current:
+        await channel.send(
+            current,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    elif not messages:
+        await channel.send(
+            "*No RP messages were recorded for this episode.*",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 class EpisodeCastView(discord.ui.LayoutView):
@@ -2324,6 +2433,8 @@ class EpisodeCastView(discord.ui.LayoutView):
         allowed_ids = {episode["creator_id"]} | {
             item["user_id"] for item in cast
         } if episode else set()
+        if episode and episode.get("narrator_id"):
+            allowed_ids.add(int(episode["narrator_id"]))
 
         if not episode or interaction.user.id not in allowed_ids:
             await interaction.response.send_message(
@@ -2377,6 +2488,188 @@ class EpisodeCastView(discord.ui.LayoutView):
 
         await interaction.response.edit_message(
             view=EpisodePrepView(self.episode_id),
+        )
+
+
+class EpisodeNarratorView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=300)
+        self.episode_id = episode_id
+        episode = get_episode(episode_id)
+
+        narrator_text = (
+            f"<@{episode['narrator_id']}>"
+            if episode and episode.get("narrator_id")
+            else "None assigned"
+        )
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                "## ⟐ Episode Narrator\n"
+                "Assign one member to narrate this episode. The narrator can "
+                "describe environments, NPCs, discoveries and scene transitions "
+                "without taking control of player OCs.\n\n"
+                f"**Current Narrator:** {narrator_text}"
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        row = discord.ui.ActionRow()
+        self.member_select = discord.ui.UserSelect(
+            placeholder="Select narrator",
+            min_values=1,
+            max_values=1,
+        )
+        self.member_select.callback = self.select_callback
+        row.add_item(self.member_select)
+        self.add_item(row)
+
+        actions = discord.ui.ActionRow()
+        clear = discord.ui.Button(
+            label="Disable Narrator",
+            style=discord.ButtonStyle.secondary,
+        )
+        close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+        )
+        clear.callback = self.clear_callback
+        close.callback = self.close_callback
+        actions.add_item(clear)
+        actions.add_item(close)
+        self.add_item(actions)
+
+    async def allowed_creator(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.send_message(
+                "This episode no longer exists.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can control the narrator.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def apply_channel_access(
+        self,
+        interaction: discord.Interaction,
+        old_narrator_id: int | None,
+        new_narrator_id: int | None,
+    ):
+        episode = get_episode(self.episode_id)
+        if not episode or not interaction.guild:
+            return
+
+        channel_id = episode.get("prep_channel_id") or episode.get("channel_id")
+        if not channel_id:
+            return
+
+        channel = interaction.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        protected_ids = {
+            episode["creator_id"],
+            *(item["user_id"] for item in get_episode_cast(self.episode_id)),
+        }
+
+        if old_narrator_id and old_narrator_id not in protected_ids:
+            old_member = interaction.guild.get_member(old_narrator_id)
+            if old_member is not None:
+                try:
+                    await channel.set_permissions(
+                        old_member,
+                        overwrite=None,
+                        reason="Remove previous episode narrator",
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+        if new_narrator_id and new_narrator_id not in protected_ids:
+            member = interaction.guild.get_member(new_narrator_id)
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(new_narrator_id)
+                except (discord.NotFound, discord.HTTPException):
+                    member = None
+            if member is not None:
+                try:
+                    await channel.set_permissions(
+                        member,
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        attach_files=True,
+                        embed_links=True,
+                        reason="Grant episode narrator access",
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        selected_id = int(self.member_select.values[0])
+        episode = get_episode(self.episode_id)
+        cast_ids = {item["user_id"] for item in get_episode_cast(self.episode_id)}
+        if selected_id in cast_ids:
+            await interaction.response.send_message(
+                "A narrator cannot also play an OC in the same episode.",
+                ephemeral=True,
+            )
+            return
+
+        old_id = episode.get("narrator_id") if episode else None
+        set_episode_narrator(self.episode_id, selected_id)
+        await self.apply_channel_access(interaction, old_id, selected_id)
+
+        member = interaction.guild.get_member(selected_id)
+        label = member.mention if member else f"<@{selected_id}>"
+        await interaction.response.edit_message(
+            view=EpisodeNoticeView(
+                f"## ⟐ NARRATOR ASSIGNED\n"
+                f"{label} is now the narrator for **Episode #{self.episode_id}**."
+            ),
+        )
+
+    async def clear_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        old_id = episode.get("narrator_id") if episode else None
+        set_episode_narrator(self.episode_id, None)
+        await self.apply_channel_access(interaction, old_id, None)
+
+        await interaction.response.edit_message(
+            view=EpisodeNoticeView(
+                f"Narrator mode is disabled for **Episode #{self.episode_id}**."
+            ),
+        )
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.edit_message(
+                view=EpisodeNoticeView("This episode no longer exists."),
+            )
+            return
+
+        await interaction.response.edit_message(
+            view=(
+                EpisodeLobbyView(self.episode_id)
+                if episode["status"] == "planning"
+                else EpisodePrepView(self.episode_id)
+            )
         )
 
 
@@ -2434,14 +2727,21 @@ class EpisodePrepView(discord.ui.LayoutView):
             custom_id=f"episode:{self.episode_id}:cast",
             style=discord.ButtonStyle.secondary,
         )
+        narrator = discord.ui.Button(
+            label="Narrator",
+            custom_id=f"episode:{self.episode_id}:narrator",
+            style=discord.ButtonStyle.secondary,
+        )
         begin.callback = self.begin_callback
         end.callback = self.end_callback
         cast.callback = self.cast_callback
+        narrator.callback = self.narrator_callback
 
         row = discord.ui.ActionRow()
         row.add_item(begin)
         row.add_item(end)
         row.add_item(cast)
+        row.add_item(narrator)
         self.add_item(row)
 
     async def allowed_creator(self, interaction: discord.Interaction) -> bool:
@@ -2459,6 +2759,14 @@ class EpisodePrepView(discord.ui.LayoutView):
             )
             return False
         return True
+
+    async def narrator_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        await interaction.response.send_message(
+            view=EpisodeNarratorView(self.episode_id),
+            ephemeral=True,
+        )
 
     async def begin_callback(self, interaction: discord.Interaction):
         if not await self.allowed_creator(interaction):
@@ -2517,6 +2825,7 @@ class EpisodePrepView(discord.ui.LayoutView):
         cleanup_channel_id = episode.get("channel_id") or episode.get("prep_channel_id")
 
         update_episode(self.episode_id, status="completed")
+        episode = get_episode(self.episode_id) or episode
 
         if cleanup_channel_id:
             interaction.client.schedule_episode_cleanup(
@@ -2675,6 +2984,86 @@ class RPBot(commands.Bot):
 
 
 
+    async def relay_episode_narrator(
+        self,
+        message: discord.Message,
+        episode: dict,
+    ):
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        me = message.guild.me
+        if me is None:
+            return
+
+        permissions = channel.permissions_for(me)
+        if not permissions.manage_webhooks or not permissions.manage_messages:
+            print(
+                f"Cannot relay narrator message in channel {channel.id}: "
+                "bot needs Manage Webhooks and Manage Messages."
+            )
+            return
+
+        cache_key = -(channel.id)
+        webhook = self.rp_webhook_cache.get(cache_key)
+
+        try:
+            if webhook is None:
+                hooks = await channel.webhooks()
+                webhook = next(
+                    (hook for hook in hooks if hook.name == "Episode Narrator Relay"),
+                    None,
+                )
+                if webhook is None:
+                    webhook = await channel.create_webhook(
+                        name="Episode Narrator Relay",
+                        reason="Relay episode narrator messages",
+                    )
+                self.rp_webhook_cache[cache_key] = webhook
+
+            payload = (message.content or "").strip()
+            if message.attachments:
+                links = "\n".join(item.url for item in message.attachments)
+                payload = f"{payload}\n{links}".strip() if payload else links
+
+            if not payload:
+                return
+            if len(payload) > 2000:
+                payload = payload[:1997] + "..."
+
+            relay_message = await webhook.send(
+                content=payload,
+                username="Narrator",
+                allowed_mentions=discord.AllowedMentions.none(),
+                wait=True,
+            )
+            await message.delete()
+
+            save_episode_message(
+                episode["episode_id"],
+                message.guild.id,
+                message.author.id,
+                0,
+                "Narrator",
+                channel.id,
+                relay_message.id,
+                payload,
+                "narrator",
+            )
+        except discord.Forbidden:
+            print(
+                f"Narrator relay permission failure in channel {channel.id}; "
+                "original message was kept if relay could not be sent."
+            )
+            self.rp_webhook_cache.pop(cache_key, None)
+        except discord.HTTPException as exc:
+            print(f"Narrator relay failed in channel {channel.id}: {exc}")
+            self.rp_webhook_cache.pop(cache_key, None)
+        except Exception as exc:
+            print(f"Unexpected narrator relay error in channel {channel.id}: {exc}")
+            self.rp_webhook_cache.pop(cache_key, None)
+
     async def on_message(self, message: discord.Message):
         # Only relay ordinary human messages in explicitly configured RP channels.
         if message.guild is None or message.author.bot or message.webhook_id:
@@ -2694,6 +3083,10 @@ class RPBot(commands.Bot):
         )
 
         if not in_saved_rp_channel and not active_episode:
+            return
+
+        if active_episode and active_episode.get("narrator_id") == message.author.id:
+            await self.relay_episode_narrator(message, active_episode)
             return
 
         if active_episode:
