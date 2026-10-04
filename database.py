@@ -201,31 +201,15 @@ def init_db():
                 "PRAGMA table_info(episode_cast)"
             ).fetchall()
         }
-        if "auto_rp_format" not in episode_cast_columns:
-            db.execute(
-                "ALTER TABLE episode_cast ADD COLUMN auto_rp_format INTEGER NOT NULL DEFAULT 0"
-            )
-
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_episode_cast_episode
-            ON episode_cast(episode_id, joined_at ASC)
-        """)
-
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS episode_messages (
-                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                episode_id INTEGER NOT NULL,
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                character_id INTEGER NOT NULL,
-                character_name TEXT NOT NULL,
-                channel_id INTEGER NOT NULL,
-                discord_message_id INTEGER,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (episode_id) REFERENCES episodes(episode_id)
-            )
-        """)
+        for column_sql in (
+            "auto_rp_format INTEGER NOT NULL DEFAULT 0",
+            "roleplay_active INTEGER NOT NULL DEFAULT 1",
+        ):
+            column_name = column_sql.split()[0]
+            if column_name not in episode_cast_columns:
+                db.execute(
+                    f"ALTER TABLE episode_cast ADD COLUMN {column_sql}"
+                )
 
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_episode_messages_episode
@@ -1007,6 +991,38 @@ def remove_episode_cast(episode_id: int, user_id: int):
         db.execute(
             "DELETE FROM episode_cast WHERE episode_id = ? AND user_id = ?",
             (episode_id, user_id),
+        )
+        db.commit()
+
+
+def lock_episode_player_settings(episode_id: int):
+    """Snapshot each cast member's RP settings for the running episode."""
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE episode_cast
+            SET
+                auto_rp_format = COALESCE(
+                    (
+                        SELECT auto_rp_format
+                        FROM player_config
+                        WHERE player_config.guild_id = episode_cast.guild_id
+                          AND player_config.user_id = episode_cast.user_id
+                    ),
+                    0
+                ),
+                roleplay_active = COALESCE(
+                    (
+                        SELECT roleplay_active
+                        FROM player_config
+                        WHERE player_config.guild_id = episode_cast.guild_id
+                          AND player_config.user_id = episode_cast.user_id
+                    ),
+                    1
+                )
+            WHERE episode_id = ?
+            """,
+            (episode_id,),
         )
         db.commit()
 
