@@ -98,6 +98,21 @@ def init_db():
             )
         """)
 
+        server_config_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(server_config)"
+            ).fetchall()
+        }
+        if "archive_channel_id" not in server_config_columns:
+            db.execute(
+                "ALTER TABLE server_config ADD COLUMN archive_channel_id INTEGER"
+            )
+        if "archive_enabled" not in server_config_columns:
+            db.execute(
+                "ALTER TABLE server_config ADD COLUMN archive_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+
         db.execute("""
             CREATE TABLE IF NOT EXISTS player_config (
                 guild_id INTEGER NOT NULL,
@@ -417,7 +432,8 @@ def save_rp_learning_example(
 def get_roleplay_settings(guild_id: int):
     with closing(connect()) as db:
         row = db.execute(
-            "SELECT guild_id, rp_enabled, rp_channel_ids "
+            "SELECT guild_id, rp_enabled, rp_channel_ids, "
+            "archive_channel_id, archive_enabled "
             "FROM server_config WHERE guild_id = ?",
             (guild_id,),
         ).fetchone()
@@ -427,6 +443,8 @@ def get_roleplay_settings(guild_id: int):
             "guild_id": guild_id,
             "enabled": False,
             "channel_ids": [],
+            "archive_channel_id": None,
+            "archive_enabled": False,
         }
 
     try:
@@ -441,6 +459,12 @@ def get_roleplay_settings(guild_id: int):
         "guild_id": guild_id,
         "enabled": bool(row["rp_enabled"]),
         "channel_ids": channel_ids,
+        "archive_channel_id": (
+            int(row["archive_channel_id"])
+            if row["archive_channel_id"]
+            else None
+        ),
+        "archive_enabled": bool(row["archive_enabled"]),
     }
 
 
@@ -448,6 +472,8 @@ def save_roleplay_settings(
     guild_id: int,
     enabled: bool,
     channel_ids: list[int],
+    archive_channel_id: int | None = None,
+    archive_enabled: bool = False,
 ):
     unique_channels = list(dict.fromkeys(int(channel_id) for channel_id in channel_ids))
 
@@ -455,18 +481,23 @@ def save_roleplay_settings(
         db.execute(
             """
             INSERT INTO server_config (
-                guild_id, rp_enabled, rp_channel_ids, updated_at
+                guild_id, rp_enabled, rp_channel_ids,
+                archive_channel_id, archive_enabled, updated_at
             )
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(guild_id) DO UPDATE SET
                 rp_enabled = excluded.rp_enabled,
                 rp_channel_ids = excluded.rp_channel_ids,
+                archive_channel_id = excluded.archive_channel_id,
+                archive_enabled = excluded.archive_enabled,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
                 guild_id,
                 1 if enabled else 0,
                 json.dumps(unique_channels),
+                archive_channel_id,
+                1 if archive_enabled else 0,
             ),
         )
         db.commit()
