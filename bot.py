@@ -14,6 +14,7 @@ from database import (
     update_character,
     delete_character,
     get_roleplay_settings,
+    save_archive_settings,
     save_roleplay_settings,
     get_active_character_id,
     save_active_character_id,
@@ -2961,7 +2962,8 @@ class EpisodeNarratorView(discord.ui.LayoutView):
         if not await self.allowed_creator(interaction):
             return
 
-        selected_id = int(self.member_select.values[0])
+        selected = self.member_select.values[0]
+        selected_id = selected.id if isinstance(selected, discord.Member) else int(selected)
         episode = get_episode(self.episode_id)
         cast_ids = {item["user_id"] for item in get_episode_cast(self.episode_id)}
         if selected_id in cast_ids:
