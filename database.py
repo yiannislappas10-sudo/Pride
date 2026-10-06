@@ -238,6 +238,9 @@ def init_db():
             "prep_message_id INTEGER",
             "archive_published INTEGER NOT NULL DEFAULT 0",
             "archive_published_at TEXT",
+            "last_activity_at TEXT",
+            "inactivity_warning_sent INTEGER NOT NULL DEFAULT 0",
+            "inactivity_warning_message_id INTEGER",
         ):
             column_name = column_sql.split()[0]
             if column_name not in episode_columns:
@@ -780,9 +783,10 @@ def get_episodes(guild_id: int, limit: int = 25):
             ORDER BY
                 CASE status
                     WHEN 'active' THEN 0
-                    WHEN 'preparing' THEN 1
-                    WHEN 'planning' THEN 2
-                    WHEN 'completed' THEN 3
+                    WHEN 'preparing' THEN 2
+                    WHEN 'planning' THEN 3
+                    WHEN 'completed' THEN 4
+                    WHEN 'paused' THEN 1
                     ELSE 4
                 END,
                 episode_id DESC
@@ -812,7 +816,7 @@ def update_episode(
     narrator_id: int | None = None,
     archive_published: bool | None = None,
 ):
-    allowed_statuses = {"planning", "preparing", "active", "completed"}
+    allowed_statuses = {"planning", "preparing", "active", "paused", "completed"}
 
     with closing(connect()) as db:
         current = db.execute(
@@ -927,6 +931,54 @@ def update_episode(
         db.commit()
 
     return get_episode(episode_id)
+
+
+def touch_episode_activity(episode_id: int):
+    with closing(connect()) as db:
+        row = db.execute(
+            """
+            SELECT inactivity_warning_message_id
+            FROM episodes
+            WHERE episode_id = ? AND status = 'active'
+            """,
+            (episode_id,),
+        ).fetchone()
+        warning_message_id = (
+            int(row["inactivity_warning_message_id"])
+            if row and row["inactivity_warning_message_id"]
+            else None
+        )
+        db.execute(
+            """
+            UPDATE episodes
+            SET last_activity_at = CURRENT_TIMESTAMP,
+                inactivity_warning_sent = 0,
+                inactivity_warning_message_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE episode_id = ? AND status = 'active'
+            """,
+            (episode_id,),
+        )
+        db.commit()
+    return warning_message_id
+
+
+def mark_episode_inactivity_warning(
+    episode_id: int,
+    message_id: int,
+):
+    with closing(connect()) as db:
+        db.execute(
+            """
+            UPDATE episodes
+            SET inactivity_warning_sent = 1,
+                inactivity_warning_message_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE episode_id = ?
+            """,
+            (int(message_id), episode_id),
+        )
+        db.commit()
 
 
 def mark_episode_archive_published(episode_id: int, published: bool = True):
