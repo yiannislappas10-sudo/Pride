@@ -15,6 +15,8 @@ from database import (
     delete_character,
     get_roleplay_settings,
     save_archive_settings,
+    touch_episode_activity,
+    mark_episode_inactivity_warning,
     save_roleplay_settings,
     get_active_character_id,
     save_active_character_id,
@@ -1582,6 +1584,184 @@ class EpisodeNoticeView(discord.ui.LayoutView):
         self.add_item(discord.ui.TextDisplay(text))
 
 
+class EpisodeInactivityView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=None)
+        self.episode_id = episode_id
+        episode = get_episode(episode_id)
+
+        creator_mention = (
+            f"<@{episode['creator_id']}>"
+            if episode and episode.get("creator_id")
+            else "Episode creator"
+        )
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                f"## ⟐ EPISODE INACTIVE
+"
+                f"No cast/narrator activity has been recorded for **10 minutes**.
+"
+                f"{creator_mention}, is this episode still continuing?
+
+"
+                "You can pause it and resume later, or finish it now."
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        actions = discord.ui.ActionRow()
+        pause = discord.ui.Button(
+            label="Pause Episode",
+            custom_id=f"episode:{episode_id}:inactivity-pause",
+            style=discord.ButtonStyle.secondary,
+        )
+        finish = discord.ui.Button(
+            label="Finish Episode",
+            custom_id=f"episode:{episode_id}:inactivity-finish",
+            style=discord.ButtonStyle.danger,
+        )
+        pause.callback = self.pause_callback
+        finish.callback = self.finish_callback
+        actions.add_item(pause)
+        actions.add_item(finish)
+        self.add_item(actions)
+
+    async def allowed_creator(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.send_message(
+                "This episode no longer exists.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can control the episode.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def pause_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        if not episode or episode["status"] != "active":
+            await interaction.response.send_message(
+                "This episode is no longer active.",
+                ephemeral=True,
+            )
+            return
+
+        interaction.client.cancel_episode_inactivity_monitor(self.episode_id)
+        update_episode(self.episode_id, status="paused")
+
+        try:
+            await interaction.channel.edit(
+                name=f"episode-{self.episode_id}-paused",
+                topic=f"PAUSED RP — Episode #{self.episode_id} — {episode['title']}",
+            )
+        except discord.HTTPException:
+            pass
+
+        await interaction.response.edit_message(
+            view=EpisodePausedView(self.episode_id)
+        )
+
+    async def finish_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        await EpisodePrepView(self.episode_id).end_callback(interaction)
+
+
+class EpisodePausedView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=None)
+        self.episode_id = episode_id
+        episode = get_episode(episode_id)
+
+        title = episode["title"] if episode else f"Episode #{episode_id}"
+
+        self.add_item(
+            discord.ui.TextDisplay(
+                f"## ⟐ EPISODE PAUSED
+"
+                f"**{title}** is currently paused.
+"
+                "RP activity is suspended until the creator resumes it."
+            )
+        )
+        self.add_item(discord.ui.Separator())
+
+        actions = discord.ui.ActionRow()
+        resume = discord.ui.Button(
+            label="Resume Episode",
+            custom_id=f"episode:{episode_id}:paused-resume",
+            style=discord.ButtonStyle.success,
+        )
+        finish = discord.ui.Button(
+            label="Finish Episode",
+            custom_id=f"episode:{episode_id}:paused-finish",
+            style=discord.ButtonStyle.danger,
+        )
+        resume.callback = self.resume_callback
+        finish.callback = self.finish_callback
+        actions.add_item(resume)
+        actions.add_item(finish)
+        self.add_item(actions)
+
+    async def allowed_creator(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.send_message(
+                "This episode no longer exists.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.user.id != episode["creator_id"]:
+            await interaction.response.send_message(
+                "Only the episode creator can control the episode.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def resume_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+
+        episode = get_episode(self.episode_id)
+        if not episode or episode["status"] != "paused":
+            await interaction.response.send_message(
+                "This episode is not currently paused.",
+                ephemeral=True,
+            )
+            return
+
+        update_episode(self.episode_id, status="active")
+        touch_episode_activity(self.episode_id)
+        interaction.client.schedule_episode_inactivity_monitor(self.episode_id)
+
+        try:
+            await interaction.channel.edit(
+                name=f"episode-{self.episode_id}-rp",
+                topic=f"LIVE RP — Episode #{self.episode_id} — {episode['title']}",
+            )
+        except discord.HTTPException:
+            pass
+
+        await interaction.response.edit_message(
+            view=EpisodePrepView(self.episode_id)
+        )
+
+    async def finish_callback(self, interaction: discord.Interaction):
+        if not await self.allowed_creator(interaction):
+            return
+        await EpisodePrepView(self.episode_id).end_callback(interaction)
+
+
 def episode_status_label(status: str) -> str:
     return {
         "planning": "RECRUITING",
@@ -3138,6 +3318,8 @@ class EpisodePrepView(discord.ui.LayoutView):
             status="active",
             channel_id=interaction.channel.id,
         )
+        touch_episode_activity(self.episode_id)
+        interaction.client.schedule_episode_inactivity_monitor(self.episode_id)
 
         try:
             await interaction.channel.edit(
@@ -3155,8 +3337,9 @@ class EpisodePrepView(discord.ui.LayoutView):
         if not await self.allowed_creator(interaction):
             return
 
+        interaction.client.cancel_episode_inactivity_monitor(self.episode_id)
         episode = get_episode(self.episode_id)
-        if episode["status"] not in {"preparing", "active"}:
+        if episode["status"] not in {"preparing", "active", "paused"}:
             await interaction.response.send_message(
                 "This episode is already closed.",
                 ephemeral=True,
@@ -3246,6 +3429,108 @@ class RPBot(commands.Bot):
         self.rp_webhook_cache: dict[int, discord.Webhook] = {}
         self.episode_prep_tasks: dict[int, asyncio.Task] = {}
         self.episode_cleanup_tasks: dict[int, asyncio.Task] = {}
+        self.episode_inactivity_tasks: dict[int, asyncio.Task] = {}
+
+    def cancel_episode_inactivity_monitor(self, episode_id: int):
+        task = self.episode_inactivity_tasks.pop(episode_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def schedule_episode_inactivity_monitor(self, episode_id: int):
+        task = self.episode_inactivity_tasks.get(episode_id)
+        if task and not task.done():
+            return
+        self.episode_inactivity_tasks[episode_id] = asyncio.create_task(
+            self._episode_inactivity_monitor(episode_id)
+        )
+
+    async def _episode_inactivity_monitor(self, episode_id: int):
+        try:
+            while True:
+                episode = get_episode(episode_id)
+                if not episode or episode["status"] != "active":
+                    return
+
+                if episode.get("inactivity_warning_sent"):
+                    return
+
+                last_activity = episode.get("last_activity_at") or episode.get("started_at")
+                if not last_activity:
+                    return
+
+                try:
+                    activity_time = datetime.datetime.fromisoformat(
+                        last_activity.replace("Z", "+00:00")
+                    )
+                except (TypeError, ValueError):
+                    return
+
+                if activity_time.tzinfo is None:
+                    activity_time = activity_time.replace(
+                        tzinfo=datetime.timezone.utc
+                    )
+
+                elapsed = (
+                    datetime.datetime.now(datetime.timezone.utc) - activity_time
+                ).total_seconds()
+                remaining = 600 - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(min(30, max(1, remaining)))
+                    continue
+
+                channel_id = episode.get("channel_id")
+                if not channel_id:
+                    return
+
+                channel = self.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.fetch_channel(channel_id)
+                    except (discord.NotFound, discord.HTTPException):
+                        return
+
+                if not isinstance(channel, discord.TextChannel):
+                    return
+
+                latest = get_episode(episode_id)
+                if (
+                    not latest
+                    or latest["status"] != "active"
+                    or latest.get("inactivity_warning_sent")
+                ):
+                    return
+
+                message = await channel.send(
+                    view=EpisodeInactivityView(episode_id),
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                    ),
+                )
+                mark_episode_inactivity_warning(episode_id, message.id)
+                return
+        except asyncio.CancelledError:
+            return
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Episode inactivity warning failed for #{episode_id}: {exc}")
+        finally:
+            self.episode_inactivity_tasks.pop(episode_id, None)
+
+    async def record_episode_activity(
+        self,
+        episode_id: int,
+        channel: discord.TextChannel,
+    ):
+        warning_message_id = touch_episode_activity(episode_id)
+        if warning_message_id:
+            try:
+                warning = await channel.fetch_message(warning_message_id)
+                await warning.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        self.schedule_episode_inactivity_monitor(episode_id)
 
     def schedule_episode_cleanup(
         self,
@@ -3395,6 +3680,7 @@ class RPBot(commands.Bot):
                 payload,
                 "narrator",
             )
+            await self.record_episode_activity(episode["episode_id"], channel)
         except discord.Forbidden:
             print(
                 f"Narrator relay permission failure in channel {channel.id}; "
@@ -3603,6 +3889,10 @@ class RPBot(commands.Bot):
                     relay_message.id,
                     payload,
                 )
+                await self.record_episode_activity(
+                    active_episode["episode_id"],
+                    channel,
+                )
         except discord.Forbidden:
             print(
                 f"RP relay permission failure in channel {channel.id}; "
@@ -3644,6 +3934,15 @@ class RPBot(commands.Bot):
                 self.add_view(EpisodeLobbyView(episode["episode_id"]))
             if episode["status"] in {"preparing", "active"} and episode.get("prep_channel_id"):
                 self.add_view(EpisodePrepView(episode["episode_id"]))
+            if episode["status"] == "active":
+                self.schedule_episode_inactivity_monitor(episode["episode_id"])
+                if (
+                    episode.get("inactivity_warning_sent")
+                    and episode.get("inactivity_warning_message_id")
+                ):
+                    self.add_view(EpisodeInactivityView(episode["episode_id"]))
+            if episode["status"] == "paused":
+                self.add_view(EpisodePausedView(episode["episode_id"]))
             if episode["status"] == "preparing":
                 self.schedule_episode_prep_timer(episode["episode_id"])
 
