@@ -3984,12 +3984,22 @@ class RPBot(commands.Bot):
         content: str,
         channel: discord.TextChannel,
     ):
+        # Hard safety guard: only real player messages may start AI reactions.
+        # AI/webhook messages must never become a new AI source message.
+        if not content or not isinstance(content, str):
+            return
+
         context = self._build_episode_context(episode, content)
         cast = get_episode_cast(episode["episode_id"])
         candidates = []
 
+        # Automatic AI reactions are opt-in per cast member.
+        # auto_rp_format is the existing personal AI toggle for the episode.
+        # Never generate dialogue for a character whose AI is disabled.
         for entry in cast:
             if entry["user_id"] == speaker_user_id:
+                continue
+            if not bool(entry.get("auto_rp_format", 0)):
                 continue
             character = get_character(entry["character_id"])
             if not character:
