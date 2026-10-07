@@ -2190,6 +2190,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             self.add_item(discord.ui.TextDisplay(episode_lobby_text(episode, cast)))
             self.add_item(discord.ui.Separator())
         full = bool(episode) and len(cast) >= int(episode.get("max_players") or 2)
+        can_start = bool(episode) and len(cast) > 0
 
         join = discord.ui.Button(
             label="Join with OC",
@@ -2204,7 +2205,7 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             disabled=(
                 not episode
                 or episode["status"] != "planning"
-                or not full
+                or not can_start
             ),
         )
         details = discord.ui.Button(
@@ -2374,9 +2375,9 @@ class EpisodeLobbyView(discord.ui.LayoutView):
             return
 
         cast = get_episode_cast(self.episode_id)
-        if len(cast) < episode["max_players"]:
+        if not cast:
             await interaction.response.send_message(
-                f"The cast is not full yet: **{len(cast)}/{episode['max_players']}**.",
+                "At least one player must join the cast before the episode can start.",
                 ephemeral=True,
             )
             return
@@ -3195,6 +3196,184 @@ class EpisodeNarratorView(discord.ui.LayoutView):
         )
 
 
+
+class NarratorAnnouncementModal(discord.ui.Modal, title="Narrator Announcement"):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=600)
+        self.episode_id = episode_id
+        self.message = discord.ui.TextInput(
+            label="Announcement",
+            placeholder="The entire building falls silent...",
+            style=discord.TextStyle.paragraph,
+            max_length=1800,
+            required=True,
+        )
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode.get("status") != "active":
+            await interaction.response.send_message(
+                "Announcements are only available while the episode is live.",
+                ephemeral=True,
+            )
+            return
+        if interaction.user.id != episode.get("narrator_id"):
+            await interaction.response.send_message(
+                "Only the assigned narrator can use narrator controls.",
+                ephemeral=True,
+            )
+            return
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        payload = self.message.value.strip()
+        if not payload:
+            await interaction.response.send_message("Write an announcement first.", ephemeral=True)
+            return
+        text = "## ⟐ NARRATOR ANNOUNCEMENT\n" + payload
+        sent = await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions.none())
+        save_episode_message(
+            self.episode_id, interaction.guild.id, interaction.user.id, 0,
+            "Narrator", channel.id, sent.id, payload, "narrator",
+        )
+        await interaction.client.record_episode_activity(self.episode_id, channel)
+        await interaction.response.send_message("Narrator announcement published.", ephemeral=True)
+
+
+class NarratorSceneModal(discord.ui.Modal, title="Narrator Scene Transition"):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=600)
+        self.episode_id = episode_id
+        self.location = discord.ui.TextInput(
+            label="New Scene / Location",
+            placeholder="The group reaches the abandoned station...",
+            max_length=700,
+            required=True,
+        )
+        self.details = discord.ui.TextInput(
+            label="Scene Description",
+            placeholder="What changes or what do the characters notice?",
+            style=discord.TextStyle.paragraph,
+            max_length=1100,
+            required=False,
+        )
+        self.add_item(self.location)
+        self.add_item(self.details)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode.get("status") != "active" or interaction.user.id != episode.get("narrator_id"):
+            await interaction.response.send_message(
+                "Scene controls are only available to the assigned narrator while the episode is live.",
+                ephemeral=True,
+            )
+            return
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        payload = (
+            "## ⟐ SCENE TRANSITION\n"
+            f"**Location:** {self.location.value.strip()}\n\n"
+            f"{self.details.value.strip() or '*The scene shifts.*'}"
+        )
+        sent = await channel.send(payload[:2000], allowed_mentions=discord.AllowedMentions.none())
+        save_episode_message(
+            self.episode_id, interaction.guild.id, interaction.user.id, 0,
+            "Narrator", channel.id, sent.id, payload[:2000], "narrator",
+        )
+        await interaction.client.record_episode_activity(self.episode_id, channel)
+        await interaction.response.send_message("Scene transition published.", ephemeral=True)
+
+
+class NarratorControlView(discord.ui.LayoutView):
+    def __init__(self, episode_id: int):
+        super().__init__(timeout=900)
+        self.episode_id = episode_id
+        episode = get_episode(episode_id)
+        cast = get_episode_cast(episode_id) if episode else []
+        narrator_id = episode.get("narrator_id") if episode else None
+        cast_lines = []
+        for item in cast:
+            character = get_character(item["character_id"])
+            cast_lines.append(
+                f"<@{item['user_id']}> — **{character['name'] if character else 'Deleted OC'}**"
+            )
+        cast_text = "\n".join(cast_lines) if cast_lines else "*No cast.*"
+        self.add_item(discord.ui.TextDisplay(
+            "## ⟐ NARRATOR CONTROL\n"
+            "*You control the world, not the players' OCs.*\n\n"
+            f"**Episode:** {episode['title'] if episode else 'Unknown'}\n"
+            f"**Status:** {episode_status_label(episode['status']) if episode else 'UNKNOWN'}\n"
+            f"**Narrator:** <@{narrator_id}>\n\n"
+            f"### Cast\n{trim(cast_text, 800)}\n\n"
+            "Use announcements for major story beats, scene transitions for moving "
+            "the setting, and normal narrator chat for moment-to-moment narration."
+        ))
+        self.add_item(discord.ui.Separator())
+        row1 = discord.ui.ActionRow()
+        announce = discord.ui.Button(label="Major Announcement", style=discord.ButtonStyle.primary)
+        scene = discord.ui.Button(label="Scene Transition", style=discord.ButtonStyle.secondary)
+        cast_button = discord.ui.Button(label="View Cast", style=discord.ButtonStyle.secondary)
+        announce.callback = self.announce_callback
+        scene.callback = self.scene_callback
+        cast_button.callback = self.cast_callback
+        row1.add_item(announce); row1.add_item(scene); row1.add_item(cast_button)
+        self.add_item(row1)
+        row2 = discord.ui.ActionRow()
+        pause = discord.ui.Button(label="Pause Episode", style=discord.ButtonStyle.secondary)
+        finish = discord.ui.Button(label="Finish Episode", style=discord.ButtonStyle.danger)
+        close = discord.ui.Button(label="Close Dashboard", style=discord.ButtonStyle.secondary)
+        pause.callback = self.pause_callback
+        finish.callback = self.finish_callback
+        close.callback = self.close_callback
+        row2.add_item(pause); row2.add_item(finish); row2.add_item(close)
+        self.add_item(row2)
+
+    async def allowed(self, interaction: discord.Interaction) -> bool:
+        episode = get_episode(self.episode_id)
+        if not episode or episode.get("narrator_id") != interaction.user.id:
+            await interaction.response.send_message("Only the assigned narrator can use this dashboard.", ephemeral=True)
+            return False
+        if episode.get("status") not in {"active", "paused"}:
+            await interaction.response.send_message("The narrator dashboard is only available for a live or paused episode.", ephemeral=True)
+            return False
+        return True
+
+    async def announce_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        await interaction.response.send_modal(NarratorAnnouncementModal(self.episode_id))
+
+    async def scene_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        if get_episode(self.episode_id).get("status") != "active":
+            await interaction.response.send_message("Resume the episode before changing the scene.", ephemeral=True)
+            return
+        await interaction.response.send_modal(NarratorSceneModal(self.episode_id))
+
+    async def cast_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        await interaction.response.send_message(view=EpisodeCastView(self.episode_id), ephemeral=True)
+
+    async def pause_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        episode = get_episode(self.episode_id)
+        if episode.get("status") != "active":
+            await interaction.response.send_message("Episode is not active.", ephemeral=True)
+            return
+        interaction.client.cancel_episode_inactivity_monitor(self.episode_id)
+        update_episode(self.episode_id, status="paused")
+        await interaction.response.edit_message(view=EpisodePausedView(self.episode_id))
+
+    async def finish_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        await EpisodePrepView(self.episode_id).end_callback(interaction)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction): return
+        await interaction.response.edit_message(view=EpisodePrepView(self.episode_id))
+
+
 class EpisodePrepView(discord.ui.LayoutView):
     def __init__(self, episode_id: int):
         super().__init__(timeout=None)
@@ -3252,11 +3431,18 @@ class EpisodePrepView(discord.ui.LayoutView):
         begin.callback = self.begin_callback
         end.callback = self.end_callback
         cast.callback = self.cast_callback
+        narrator = discord.ui.Button(
+            label="Narrator Dashboard",
+            style=discord.ButtonStyle.primary,
+            disabled=not episode or not episode.get("narrator_id") or episode["status"] not in {"preparing", "active", "paused"},
+        )
+        narrator.callback = self.narrator_callback
 
         row = discord.ui.ActionRow()
         row.add_item(begin)
         row.add_item(end)
         row.add_item(cast)
+        row.add_item(narrator)
         self.add_item(row)
 
     async def allowed_creator(self, interaction: discord.Interaction) -> bool:
@@ -3276,6 +3462,16 @@ class EpisodePrepView(discord.ui.LayoutView):
         return True
 
     async def narrator_callback(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode:
+            await interaction.response.send_message("This episode no longer exists.", ephemeral=True)
+            return
+        if episode.get("narrator_id") == interaction.user.id and episode.get("status") in {"preparing", "active", "paused"}:
+            await interaction.response.send_message(
+                view=NarratorControlView(self.episode_id),
+                ephemeral=True,
+            )
+            return
         if not await self.allowed_creator(interaction):
             return
         await interaction.response.send_message(
