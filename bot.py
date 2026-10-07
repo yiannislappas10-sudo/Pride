@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import os
 import re
+import random
 
 import discord
 from discord import app_commands
@@ -3803,6 +3804,218 @@ class RPBot(commands.Bot):
 
 
 
+
+    def _reaction_score(
+        self,
+        character: dict,
+        speaker_id: int,
+        content: str,
+        cast_entry: dict,
+    ) -> int:
+        text = (content or "").lower()
+        personality = (character.get("personality") or "").lower()
+        name = (character.get("name") or "").lower()
+        score = 18
+
+        if character.get("name") and re.search(
+            rf"\\b{re.escape(character['name'].lower())}\\b", text
+        ):
+            score += 55
+
+        if "?" in text:
+            score += 12
+        if any(word in text for word in (
+            "help", "danger", "attack", "run", "wait", "look", "where",
+            "why", "what", "who", "please", "sorry", "love", "hate",
+        )):
+            score += 10
+        if any(word in text for word in (
+            "blood", "fire", "gun", "knife", "explosion", "dead",
+            "screaming", "crash", "monster", "missing",
+        )):
+            score += 18
+
+        personality_cues = {
+            "quiet": 8, "shy": 8, "nervous": 10, "anxious": 10,
+            "protective": 16, "curious": 14, "sarcastic": 12,
+            "aggressive": 14, "confident": 10, "friendly": 8,
+            "calm": 6, "serious": 8, "reckless": 14, "paranoid": 16,
+            "kind": 8, "cold": 7, "brave": 12,
+        }
+        for cue, bonus in personality_cues.items():
+            if cue in personality:
+                score += bonus
+
+        # Personal settings can reduce automatic character chatter without
+        # disabling direct mentions or major-event reactions.
+        if not bool(cast_entry.get("roleplay_active", 1)):
+            return 0
+
+        return score
+
+    def _reaction_text(
+        self,
+        character: dict,
+        content: str,
+        index: int,
+    ) -> str:
+        personality = (character.get("personality") or "").lower()
+        text = (content or "").strip()
+        name = character.get("name") or "Character"
+
+        urgent = any(word in text.lower() for word in (
+            "danger", "attack", "run", "fire", "blood", "explosion",
+            "dead", "help", "scream", "monster",
+        ))
+        question = "?" in text
+
+        if "sarcastic" in personality:
+            lines = [
+                "Oh, great. Because apparently today wasn't complicated enough.",
+                "You cannot possibly be serious right now.",
+                "That sounds like a terrible idea. Naturally, we're doing it.",
+            ]
+        elif "nervous" in personality or "anxious" in personality:
+            lines = [
+                "I really don't like where this is going.",
+                "Can someone please tell me that was supposed to happen?",
+                "Okay... nobody panic. I'm already doing enough of that for everyone.",
+            ]
+        elif "protective" in personality or "brave" in personality:
+            lines = [
+                "Stay behind me. We deal with this together.",
+                "Nobody moves until I know we're safe.",
+                "I've got this. Just keep everyone together.",
+            ]
+        elif "cold" in personality or "serious" in personality:
+            lines = [
+                "Focus. We can deal with this if we stop wasting time.",
+                "Watch the room. Something isn't right.",
+                "Keep moving. We don't have time to hesitate.",
+            ]
+        elif "curious" in personality:
+            lines = [
+                "Wait. Did you notice that too?",
+                "Hold on. That actually raises more questions than it answers.",
+                "Interesting... there's definitely more going on here.",
+            ]
+        elif urgent:
+            lines = [
+                "Everyone, stay alert.",
+                "That changes things. We need to move.",
+                "Nobody split up. Not now.",
+            ]
+        elif question:
+            lines = [
+                "I was wondering the same thing.",
+                "I don't know yet, but I'm listening.",
+                "That's a good question.",
+            ]
+        else:
+            lines = [
+                "Right...",
+                "I'm listening.",
+                "Something about this doesn't feel quite right.",
+            ]
+
+        # Give later responders slightly different phrasing without adding
+        # noisy random filler.
+        rng = random.Random(f"{name}:{text}:{index}")
+        response = lines[rng.randrange(len(lines))]
+        return response[:900]
+
+    async def trigger_episode_reactions(
+        self,
+        episode: dict,
+        speaker_user_id: int,
+        source_message_id: int,
+        content: str,
+        channel: discord.TextChannel,
+    ):
+        cast = get_episode_cast(episode["episode_id"])
+        candidates = []
+
+        for entry in cast:
+            if entry["user_id"] == speaker_user_id:
+                continue
+            character = get_character(entry["character_id"])
+            if not character:
+                continue
+
+            score = self._reaction_score(
+                character,
+                speaker_user_id,
+                content,
+                entry,
+            )
+            if score <= 0:
+                continue
+
+            rng = random.Random(
+                f"{episode['episode_id']}:{source_message_id}:{entry['user_id']}"
+            )
+            # High relevance activates easily; weak relevance still has a
+            # chance so the cast feels alive instead of silent.
+            chance = min(0.92, 0.18 + (score / 100))
+            if rng.random() <= chance:
+                candidates.append((score + rng.random() * 20, entry, character))
+
+        if not candidates:
+            return
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        # Usually 1–3 characters react. Larger casts can produce a small
+        # cluster, while avoiding every character speaking at once.
+        reaction_count = min(3, max(1, len(candidates) // 3 + 1))
+        selected = candidates[:reaction_count]
+
+        webhook = self.rp_webhook_cache.get(channel.id)
+        try:
+            if webhook is None:
+                hooks = await channel.webhooks()
+                webhook = next(
+                    (hook for hook in hooks if hook.name == "OC Roleplay Relay"),
+                    None,
+                )
+                if webhook is None:
+                    webhook = await channel.create_webhook(
+                        name="OC Roleplay Relay",
+                        reason="Relay automatic contextual episode reactions",
+                    )
+                self.rp_webhook_cache[channel.id] = webhook
+
+            for index, (_, entry, character) in enumerate(selected):
+                reaction = self._reaction_text(character, content, index)
+                formatted = f"{character['name']}: {reaction}"
+                send_kwargs = {
+                    "content": formatted,
+                    "username": character["name"][:80],
+                    "allowed_mentions": discord.AllowedMentions.none(),
+                    "wait": True,
+                }
+                if character.get("avatar_url"):
+                    send_kwargs["avatar_url"] = character["avatar_url"]
+
+                relay = await webhook.send(**send_kwargs)
+                save_episode_message(
+                    episode["episode_id"],
+                    episode["guild_id"],
+                    entry["user_id"],
+                    character["character_id"],
+                    character["name"],
+                    channel.id,
+                    relay.id,
+                    reaction,
+                    "character",
+                )
+
+            await self.record_episode_activity(episode["episode_id"], channel)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(
+                f"Automatic episode reaction failed for #{episode['episode_id']}: {exc}"
+            )
+            self.rp_webhook_cache.pop(channel.id, None)
+
     async def relay_episode_narrator(
         self,
         message: discord.Message,
@@ -4081,6 +4294,13 @@ class RPBot(commands.Bot):
                 )
                 await self.record_episode_activity(
                     active_episode["episode_id"],
+                    channel,
+                )
+                await self.trigger_episode_reactions(
+                    active_episode,
+                    message.author.id,
+                    message.id,
+                    message.content or "",
                     channel,
                 )
         except discord.Forbidden:
