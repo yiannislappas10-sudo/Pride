@@ -160,6 +160,20 @@ def init_db():
         """)
 
         db.execute("""
+            CREATE TABLE IF NOT EXISTS narrator_templates (
+                template_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                owner_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'custom',
+                effect TEXT NOT NULL DEFAULT 'none',
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        db.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -1266,3 +1280,29 @@ def get_episode_preparation_remaining(episode_id: int, prep_seconds: int = 600):
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     return max(0, int(prep_seconds - elapsed))
+
+
+def create_narrator_template(guild_id, owner_id, name, category, effect, content):
+    name = (name or "").strip()[:80]
+    category = (category or "custom").strip()[:40]
+    effect = (effect or "none").strip()[:40]
+    content = (content or "").strip()[:1900]
+    if not name or not content:
+        return None
+    with closing(connect()) as db:
+        cur = db.execute("INSERT INTO narrator_templates (guild_id, owner_id, name, category, effect, content) VALUES (?, ?, ?, ?, ?, ?)", (guild_id, owner_id, name, category, effect, content))
+        db.commit()
+        template_id = int(cur.lastrowid)
+    return get_narrator_template(template_id)
+
+
+def get_narrator_template(template_id):
+    with closing(connect()) as db:
+        row = db.execute("SELECT * FROM narrator_templates WHERE template_id = ?", (template_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_narrator_templates(guild_id, owner_id):
+    with closing(connect()) as db:
+        rows = db.execute("SELECT * FROM narrator_templates WHERE guild_id = ? AND owner_id = ? ORDER BY template_id DESC LIMIT 50", (guild_id, owner_id)).fetchall()
+    return [dict(row) for row in rows]
