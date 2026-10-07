@@ -7,6 +7,7 @@ import random
 import discord
 from discord import app_commands
 from discord.ext import commands
+from narrator_tools import install_narrator_tools
 from database import (
     init_db,
     get_characters,
@@ -4674,6 +4675,8 @@ async def on_app_command_error(
 
 
 bot.tree.add_command(oc_group)
+
+install_narrator_tools(NarratorControlView)
 
 if __name__ == "__main__":
     bot.run(TOKEN)
