@@ -1682,10 +1682,8 @@ class EpisodePausedView(discord.ui.LayoutView):
 
         self.add_item(
             discord.ui.TextDisplay(
-                f"## ⟐ EPISODE PAUSED
-"
-                f"**{title}** is currently paused.
-"
+                f"## ⟐ EPISODE PAUSED\n"
+                f"**{title}** is currently paused.\n"
                 "RP activity is suspended until the creator resumes it."
             )
         )
