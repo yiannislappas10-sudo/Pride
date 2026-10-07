@@ -3618,6 +3618,7 @@ class RPBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rp_webhook_cache: dict[int, discord.Webhook] = {}
+        self.reaction_source_ids: set[int] = set()
         self.episode_prep_tasks: dict[int, asyncio.Task] = {}
         self.episode_cleanup_tasks: dict[int, asyncio.Task] = {}
         self.episode_inactivity_tasks: dict[int, asyncio.Task] = {}
@@ -3988,6 +3989,11 @@ class RPBot(commands.Bot):
         # AI/webhook messages must never become a new AI source message.
         if not content or not isinstance(content, str):
             return
+        if source_message_id in self.reaction_source_ids:
+            return
+        self.reaction_source_ids.add(source_message_id)
+        if len(self.reaction_source_ids) > 5000:
+            self.reaction_source_ids = set(list(self.reaction_source_ids)[-2500:])
 
         context = self._build_episode_context(episode, content)
         cast = get_episode_cast(episode["episode_id"])
@@ -4001,8 +4007,10 @@ class RPBot(commands.Bot):
                 continue
             if not bool(entry.get("auto_rp_format", 0)):
                 continue
+            if not bool(entry.get("roleplay_active", 1)):
+                continue
             character = get_character(entry["character_id"])
-            if not character:
+            if not character or character.get("user_id") != entry["user_id"]:
                 continue
 
             score = self._reaction_score(
