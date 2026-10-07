@@ -3853,27 +3853,50 @@ class RPBot(commands.Bot):
 
         return score
 
+    def _build_episode_context(self, episode: dict, content: str) -> dict:
+        messages = get_episode_messages(episode["episode_id"])
+        recent = messages[-10:]
+        return {
+            "recent": recent,
+            "last_character": (
+                recent[-1]["character_name"]
+                if recent else None
+            ),
+            "location": episode.get("location") or "the current scene",
+            "premise": episode.get("premise") or "",
+            "tone": episode.get("tone") or "",
+            "incoming": (content or "").strip(),
+        }
+
     def _reaction_text(
         self,
         character: dict,
         content: str,
         index: int,
+        context: dict | None = None,
     ) -> str:
         personality = (character.get("personality") or "").lower()
         text = (content or "").strip()
+        lower = text.lower()
+        context = context or {}
+        recent = context.get("recent") or []
+        last_character = context.get("last_character")
         name = character.get("name") or "Character"
 
-        urgent = any(word in text.lower() for word in (
+        urgent = any(word in lower for word in (
             "danger", "attack", "run", "fire", "blood", "explosion",
-            "dead", "help", "scream", "monster",
+            "dead", "help", "scream", "monster", "missing",
         ))
         question = "?" in text
+        direct = bool(re.search(rf"\b{re.escape(name.lower())}\b", lower))
 
+        # Avoid sounding like a bot replying with the same stock sentence.
+        # Pick a response family from the OC's personality and the current beat.
         if "sarcastic" in personality:
             lines = [
-                "Oh, great. Because apparently today wasn't complicated enough.",
+                "Oh, brilliant. Because apparently we needed another problem.",
                 "You cannot possibly be serious right now.",
-                "That sounds like a terrible idea. Naturally, we're doing it.",
+                "That is a spectacularly bad idea. I'm impressed.",
             ]
         elif "nervous" in personality or "anxious" in personality:
             lines = [
@@ -3883,9 +3906,9 @@ class RPBot(commands.Bot):
             ]
         elif "protective" in personality or "brave" in personality:
             lines = [
-                "Stay behind me. We deal with this together.",
+                "Stay close. We deal with this together.",
                 "Nobody moves until I know we're safe.",
-                "I've got this. Just keep everyone together.",
+                "I've got this. Keep everyone together.",
             ]
         elif "cold" in personality or "serious" in personality:
             lines = [
@@ -3896,8 +3919,14 @@ class RPBot(commands.Bot):
         elif "curious" in personality:
             lines = [
                 "Wait. Did you notice that too?",
-                "Hold on. That actually raises more questions than it answers.",
-                "Interesting... there's definitely more going on here.",
+                "Hold on. That raises more questions than it answers.",
+                "Interesting. There is definitely more going on here.",
+            ]
+        elif "friendly" in personality or "kind" in personality:
+            lines = [
+                "Hey, stay with us. We'll figure this out.",
+                "I'm listening. Tell me what happened.",
+                "Okay. Let's slow down and work this out together.",
             ]
         elif urgent:
             lines = [
@@ -3918,10 +3947,33 @@ class RPBot(commands.Bot):
                 "Something about this doesn't feel quite right.",
             ]
 
-        # Give later responders slightly different phrasing without adding
-        # noisy random filler.
-        rng = random.Random(f"{name}:{text}:{index}")
+        seed = f"{character.get('character_id', name)}:{text}:{index}:{len(recent)}"
+        rng = random.Random(seed)
         response = lines[rng.randrange(len(lines))]
+
+        # Turn reactions into a conversation chain instead of isolated one-offs.
+        if last_character and last_character != name and (direct or question or index == 0):
+            connectors = [
+                f" {last_character},",
+                f" — {last_character},",
+            ]
+            connector = connectors[rng.randrange(len(connectors))]
+            if response.endswith("."):
+                response = response[:-1] + connector + "."
+        elif recent and index > 0:
+            response = "I agree." if rng.random() < 0.25 else response
+
+        # Major events can pull a character physically/emotionally into the scene.
+        if urgent and rng.random() < 0.45:
+            action = rng.choice([
+                "steps forward",
+                "looks sharply toward the source",
+                "moves closer to the group",
+                "goes still for a moment",
+                "turns toward the noise",
+            ])
+            response = f"*{action}.* {response}"
+
         return response[:900]
 
     async def trigger_episode_reactions(
@@ -3932,6 +3984,7 @@ class RPBot(commands.Bot):
         content: str,
         channel: discord.TextChannel,
     ):
+        context = self._build_episode_context(episode, content)
         cast = get_episode_cast(episode["episode_id"])
         candidates = []
 
@@ -3985,7 +4038,12 @@ class RPBot(commands.Bot):
                 self.rp_webhook_cache[channel.id] = webhook
 
             for index, (_, entry, character) in enumerate(selected):
-                reaction = self._reaction_text(character, content, index)
+                reaction = self._reaction_text(
+                    character,
+                    content,
+                    index,
+                    context,
+                )
                 formatted = f"{character['name']}: {reaction}"
                 send_kwargs = {
                     "content": formatted,
