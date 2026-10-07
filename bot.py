@@ -1598,13 +1598,9 @@ class EpisodeInactivityView(discord.ui.LayoutView):
 
         self.add_item(
             discord.ui.TextDisplay(
-                f"## ⟐ EPISODE INACTIVE
-"
-                f"No cast/narrator activity has been recorded for **10 minutes**.
-"
-                f"{creator_mention}, is this episode still continuing?
-
-"
+                f"## ⟐ EPISODE INACTIVE\n"
+                f"No cast/narrator activity has been recorded for **10 minutes**.\n"
+                f"{creator_mention}, is this episode still continuing?\n\n"
                 "You can pause it and resume later, or finish it now."
             )
         )
