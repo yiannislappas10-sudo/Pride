@@ -3237,7 +3237,16 @@ class EpisodeNarratorView(discord.ui.LayoutView):
             return
 
         selected = self.member_select.values[0]
-        selected_id = selected.id if isinstance(selected, discord.Member) else int(selected)
+        # UserSelect can return a discord.Member or a discord.User depending on context.
+        # Both expose .id; only coerce when the selected value is already a raw ID.
+        try:
+            selected_id = int(getattr(selected, "id", selected))
+        except (TypeError, ValueError):
+            await interaction.response.send_message(
+                "I couldn't read that member selection. Please select them again.",
+                ephemeral=True,
+            )
+            return
         episode = get_episode(self.episode_id)
         cast_ids = {item["user_id"] for item in get_episode_cast(self.episode_id)}
         if selected_id in cast_ids:
