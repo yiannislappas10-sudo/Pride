@@ -10,7 +10,7 @@ from aiohttp import web
 import discord
 from discord import app_commands
 from discord.ext import commands
-from narrator_tools import install_narrator_tools
+from narrator_tools import ToolsView, install_narrator_tools
 from database import (
     init_db,
     get_characters,
@@ -255,7 +255,9 @@ def smart_rp_format(character_name: str, content: str) -> str:
     else:
         formatted = text
 
-    return f"{name}: {formatted}"[:2000]
+    # The webhook username already displays the character's name.
+    # Keep the body clean so the name is not repeated in every message.
+    return formatted[:2000]
 
 
 async def ai_format_rp_message(character: dict, content: str, examples: list[dict]) -> str:
@@ -3534,12 +3536,20 @@ class EpisodePrepView(discord.ui.LayoutView):
             disabled=not episode or not episode.get("narrator_id") or episode["status"] not in {"preparing", "active", "paused"},
         )
         narrator.callback = self.narrator_callback
+        templates = discord.ui.Button(
+            label="Chat Templates",
+            custom_id=f"episode:{self.episode_id}:chat-templates",
+            style=discord.ButtonStyle.primary,
+            disabled=not episode or episode["status"] != "active",
+        )
+        templates.callback = self.chat_templates_callback
 
         row = discord.ui.ActionRow()
         row.add_item(begin)
         row.add_item(end)
         row.add_item(cast)
         row.add_item(narrator)
+        row.add_item(templates)
         self.add_item(row)
 
     async def allowed_creator(self, interaction: discord.Interaction) -> bool:
@@ -3573,6 +3583,34 @@ class EpisodePrepView(discord.ui.LayoutView):
             return
         await interaction.response.send_message(
             view=EpisodeNarratorView(self.episode_id),
+            ephemeral=True,
+        )
+
+    async def chat_templates_callback(self, interaction: discord.Interaction):
+        episode = get_episode(self.episode_id)
+        if not episode or episode.get("status") != "active":
+            await interaction.response.send_message(
+                "Chat templates are available while an episode is live.",
+                ephemeral=True,
+            )
+            return
+
+        cast_ids = {entry["user_id"] for entry in get_episode_cast(self.episode_id)}
+        is_narrator = episode.get("narrator_id") == interaction.user.id
+        if not is_narrator and interaction.user.id not in cast_ids:
+            await interaction.response.send_message(
+                "Only the episode's cast and assigned narrator can use chat templates.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            view=ToolsView(
+                self.episode_id,
+                "templates",
+                owner_id=interaction.user.id,
+                return_to="episode",
+            ),
             ephemeral=True,
         )
 
@@ -4159,7 +4197,7 @@ class RPBot(commands.Bot):
                     index,
                     context,
                 )
-                formatted = f"{character['name']}: {reaction}"
+                formatted = reaction
                 send_kwargs = {
                     "content": formatted,
                     "username": character["name"][:80],
@@ -4381,7 +4419,7 @@ class RPBot(commands.Bot):
             original_payload = (message.content or "").strip()
 
             if message.attachments:
-                attachment_links = "\\n".join(item.url for item in message.attachments)
+                attachment_links = "\n".join(item.url for item in message.attachments)
                 original_payload = (
                     f"{original_payload}\\n{attachment_links}"
                     if original_payload
@@ -4393,7 +4431,7 @@ class RPBot(commands.Bot):
             if len(original_payload) > 2000:
                 original_payload = original_payload[:1997] + "..."
 
-            payload = f'{character["name"]}: {message.content.strip()}'
+            payload = original_payload
             send_kwargs = {
                 "content": payload,
                 "username": character["name"][:80],
@@ -4426,10 +4464,10 @@ class RPBot(commands.Bot):
                         timeout=3.0,
                     )
                 except asyncio.TimeoutError:
-                    payload = f'{character["name"]}: {message.content.strip()}'
+                    payload = message.content.strip()
 
                 if message.attachments:
-                    attachment_links = "\\n".join(
+                    attachment_links = "\n".join(
                         item.url for item in message.attachments
                     )
                     payload = f"{payload}\\n{attachment_links}".strip()
@@ -4793,6 +4831,7 @@ async def on_app_command_error(
 bot.tree.add_command(oc_group)
 
 install_narrator_tools(NarratorControlView)
+ToolsView.episode_view = EpisodePrepView
 
 if __name__ == "__main__":
     bot.run(TOKEN)
