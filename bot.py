@@ -3,7 +3,10 @@ import datetime
 import os
 import re
 import random
+import hmac
+import json
 
+from aiohttp import web
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -49,6 +52,7 @@ from database import (
     clear_episode_narrator_requests,
     mark_episode_archive_published,
     get_unpublished_completed_episodes,
+    record_external_event,
 )
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -56,6 +60,7 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing.")
 
 DEV_GUILD_ID = 1529246492332920872
+PRIDE_API_KEY = os.getenv("PRIDE_API_KEY", "").strip()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -72,6 +77,96 @@ def display(value: str) -> str:
 def trim(value: str, limit: int = 1024) -> str:
     value = display(value)
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+async def pride_api_health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "Pride"})
+
+
+async def pride_api_event(request: web.Request) -> web.Response:
+    if not PRIDE_API_KEY:
+        return web.json_response(
+            {"status": "error", "message": "Pride event API is not configured."},
+            status=503,
+        )
+
+    supplied_key = request.headers.get("X-Pride-Key", "")
+    if not supplied_key or not hmac.compare_digest(supplied_key, PRIDE_API_KEY):
+        return web.json_response(
+            {"status": "error", "message": "Unauthorized."},
+            status=401,
+        )
+
+    try:
+        payload = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return web.json_response(
+            {"status": "error", "message": "Request body must be valid JSON."},
+            status=400,
+        )
+
+    if not isinstance(payload, dict):
+        return web.json_response(
+            {"status": "error", "message": "Request body must be a JSON object."},
+            status=400,
+        )
+
+    try:
+        guild_id = int(payload["guild_id"])
+        user_id = int(payload["user_id"])
+    except (KeyError, TypeError, ValueError):
+        return web.json_response(
+            {"status": "error", "message": "guild_id and user_id must be integers."},
+            status=400,
+        )
+
+    source_bot = str(payload.get("source_bot", "")).strip().lower()[:40]
+    event_name = str(payload.get("event", "")).strip()[:120]
+    event_id = str(payload.get("event_id", "")).strip()[:128]
+    metadata = payload.get("metadata", {})
+
+    if guild_id <= 0 or user_id <= 0 or not source_bot or not event_name or not event_id:
+        return web.json_response(
+            {"status": "error", "message": "Required event fields are missing or invalid."},
+            status=400,
+        )
+    if not isinstance(metadata, dict):
+        return web.json_response(
+            {"status": "error", "message": "metadata must be a JSON object."},
+            status=400,
+        )
+
+    metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+    if len(metadata_json.encode("utf-8")) > 4096:
+        return web.json_response(
+            {"status": "error", "message": "metadata is too large."},
+            status=413,
+        )
+
+    try:
+        inserted = await asyncio.to_thread(
+            record_external_event,
+            event_id,
+            guild_id,
+            user_id,
+            source_bot,
+            event_name,
+            metadata_json,
+        )
+    except Exception:
+        print("[PRIDE API] Failed to persist an incoming event.")
+        return web.json_response(
+            {"status": "error", "message": "Could not persist event."},
+            status=500,
+        )
+
+    return web.json_response(
+        {
+            "status": "recorded" if inserted else "duplicate",
+            "event_id": event_id,
+        },
+        status=201 if inserted else 200,
+    )
 
 
 def smart_rp_format(character_name: str, content: str) -> str:
@@ -3623,6 +3718,7 @@ class RPBot(commands.Bot):
         self.episode_prep_tasks: dict[int, asyncio.Task] = {}
         self.episode_cleanup_tasks: dict[int, asyncio.Task] = {}
         self.episode_inactivity_tasks: dict[int, asyncio.Task] = {}
+        self._api_runner: web.AppRunner | None = None
 
     def cancel_episode_inactivity_monitor(self, episode_id: int):
         task = self.episode_inactivity_tasks.pop(episode_id, None)
@@ -4393,6 +4489,24 @@ class RPBot(commands.Bot):
             print(f"Unexpected RP relay error in channel {channel.id}: {exc}")
             self.rp_webhook_cache.pop(channel.id, None)
 
+    async def start_api_server(self):
+        app = web.Application(client_max_size=16 * 1024)
+        app.router.add_get("/health", pride_api_health)
+        app.router.add_post("/event", pride_api_event)
+
+        self._api_runner = web.AppRunner(app, access_log=None)
+        await self._api_runner.setup()
+        port = int(os.getenv("PORT", "8080"))
+        site = web.TCPSite(self._api_runner, host="0.0.0.0", port=port)
+        await site.start()
+        print(f"[PRIDE API] Listening on 0.0.0.0:{port}")
+
+    async def close(self):
+        if self._api_runner is not None:
+            await self._api_runner.cleanup()
+            self._api_runner = None
+        await super().close()
+
     async def setup_hook(self):
         init_db()
 
@@ -4452,6 +4566,8 @@ class RPBot(commands.Bot):
             override=True,
         )
         synced = await self.tree.sync(guild=guild)
+
+        await self.start_api_server()
 
         print(
             f"Synced {len(synced)} commands to guild {DEV_GUILD_ID}; "
