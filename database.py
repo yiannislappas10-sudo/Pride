@@ -1306,3 +1306,51 @@ def get_narrator_templates(guild_id, owner_id):
     with closing(connect()) as db:
         rows = db.execute("SELECT * FROM narrator_templates WHERE guild_id = ? AND owner_id = ? ORDER BY template_id DESC LIMIT 50", (guild_id, owner_id)).fetchall()
     return [dict(row) for row in rows]
+
+
+def record_external_event(
+    event_id: str,
+    guild_id: int,
+    user_id: int,
+    source_bot: str,
+    event_name: str,
+    metadata_json: str,
+) -> bool:
+    """Persist an authenticated event from another Project Haven bot.
+
+    event_id is unique so retries cannot create duplicate activity records.
+    """
+    with closing(connect()) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS external_events (
+                event_id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                source_bot TEXT NOT NULL,
+                event_name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_external_events_user
+            ON external_events(guild_id, user_id, created_at)
+        """)
+        cursor = db.execute(
+            """
+            INSERT OR IGNORE INTO external_events (
+                event_id, guild_id, user_id, source_bot, event_name, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(event_id)[:128],
+                int(guild_id),
+                int(user_id),
+                str(source_bot)[:40],
+                str(event_name)[:120],
+                str(metadata_json)[:4096],
+            ),
+        )
+        db.commit()
+        return cursor.rowcount > 0
